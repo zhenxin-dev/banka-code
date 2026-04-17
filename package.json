@@ -1,0 +1,26 @@
+{
+  "name": "banka-code",
+  "version": "0.1.0",
+  "description": "Banka Code is a coding agent built with TypeScript + Bun, featuring a Senren*Banka themed TUI.",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "banka": "./src/index.ts"
+  },
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "check": "tsc --noEmit",
+    "build": "bun run scripts/build.ts --single",
+    "build:all": "bun run scripts/build.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@opentui/core": "^0.1.99",
+    "@opentui/solid": "^0.1.99",
+    "solid-js": "^1.9.9"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.9.3"
+  }
+}
