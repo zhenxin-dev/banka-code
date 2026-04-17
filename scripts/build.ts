@@ -45,13 +45,12 @@ const targets = singleFlag
 await $`rm -rf dist`
 
 if (!skipInstall) {
-  console.log("预装所有平台的 @opentui/core ...")
-  await $`bun install --os="*" --cpu="*" @opentui/core@${pkg.dependencies["@opentui/core"]}`
+  await $`bun install --os="*" --cpu="*" @opentui/core@${pkg.dependencies["@opentui/core"]}`.quiet()
 }
 
-  const localWorkerPath = path.resolve(dir, "node_modules/@opentui/core/parser.worker.js")
-  const rootWorkerPath = path.resolve(dir, "../../node_modules/@opentui/core/parser.worker.js")
-  const parserWorker = fs.realpathSync(fs.existsSync(localWorkerPath) ? localWorkerPath : rootWorkerPath)
+const localWorkerPath = path.resolve(dir, "node_modules/@opentui/core/parser.worker.js")
+const rootWorkerPath = path.resolve(dir, "../../node_modules/@opentui/core/parser.worker.js")
+const parserWorker = fs.realpathSync(fs.existsSync(localWorkerPath) ? localWorkerPath : rootWorkerPath)
 
 const binaryName = "banka"
 
@@ -70,9 +69,7 @@ for (const item of targets) {
     item.arch,
   ].join("-")
 
-  console.log(`构建 ${targetName} ...`)
-
-  await $`mkdir -p dist/${targetName}/bin`
+  await $`mkdir -p dist/${targetName}/bin`.quiet()
 
   const bunfsRoot = item.os === "win32" ? "B:/~BUN/root/" : "/$bunfs/root/"
   const workerRelativePath = path.relative(dir, parserWorker).split("\\").join("/")
@@ -104,7 +101,6 @@ for (const item of targets) {
   })
 
   if (!result.success) {
-    console.error(`构建 ${targetName} 失败：`)
     for (const log of result.logs) {
       console.error(log)
     }
@@ -113,13 +109,12 @@ for (const item of targets) {
 
   if (item.os === process.platform && item.arch === process.arch) {
     const binaryPath = path.resolve(dir, `dist/${targetName}/bin/${binaryName}${ext}`)
-    console.log(`冒烟测试: ${binaryPath} --version`)
     try {
-      const versionOutput = await $`${binaryPath} --version`.text()
+      const versionOutput = await $`${binaryPath} --version`.quiet().text()
       if (!versionOutput.includes(pkg.version)) {
-        throw new Error(`版本不匹配: ${versionOutput.trim()} !== ${pkg.version}`)
+        console.error(`版本不匹配: ${versionOutput.trim()} !== ${pkg.version}`)
+        process.exit(1)
       }
-      console.log(`冒烟测试通过: ${versionOutput.trim()}`)
     } catch (e) {
       console.error(`冒烟测试失败: ${e}`)
       process.exit(1)
@@ -139,13 +134,10 @@ for (const item of targets) {
     ),
   )
 
-  console.log(`✓ ${targetName} 构建完成`)
+  console.log(`✓ ${targetName}`)
 }
 
 console.log("")
-console.log("=== 构建完成 ===")
-console.log("")
-console.log("输出:")
 for (const item of targets) {
   const targetName = [
     pkg.name,
