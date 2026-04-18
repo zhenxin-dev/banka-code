@@ -10,7 +10,6 @@ import { isRecord } from "../shared/is-record.ts";
 import type { ToolDefinition } from "../tools/tool.ts";
 import type { ModelClient, ModelCompletionRequest } from "./model-client.ts";
 
-const DEFAULT_ANTHROPIC_TIMEOUT_MS = 60_000;
 const ANTHROPIC_VERSION = "2023-06-01";
 
 /**
@@ -20,7 +19,6 @@ export interface AnthropicClientConfig {
   readonly apiKey: string;
   readonly baseUrl: string;
   readonly model: string;
-  readonly timeoutMs: number;
 }
 
 interface AnthropicTextBlock {
@@ -70,13 +68,10 @@ export class AnthropicModelClient implements ModelClient {
   readonly #apiKey: string;
   readonly #baseUrl: string;
   readonly #model: string;
-  readonly #timeoutMs: number;
-
   public constructor(config: AnthropicClientConfig) {
     this.#apiKey = config.apiKey;
     this.#baseUrl = trimTrailingSlash(config.baseUrl);
     this.#model = config.model;
-    this.#timeoutMs = config.timeoutMs;
   }
 
   /**
@@ -95,7 +90,6 @@ export class AnthropicModelClient implements ModelClient {
 
     const response = await fetch(`${this.#baseUrl}/messages`, {
       method: "POST",
-      signal: AbortSignal.timeout(this.#timeoutMs),
       headers: {
         "Content-Type": "application/json",
         "x-api-key": this.#apiKey,
@@ -273,11 +267,4 @@ function parseToolUseBlock(rawBlock: Record<string, unknown>): ToolCall {
 
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
-}
-
-/**
- * 返回 anthropic 默认超时时间。
- */
-export function getDefaultAnthropicTimeoutMs(): number {
-  return DEFAULT_ANTHROPIC_TIMEOUT_MS;
 }

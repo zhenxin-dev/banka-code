@@ -6,6 +6,8 @@
 
 import { ToolExecutionError } from "../errors/banka-error.ts";
 import type { ToolArguments, ToolDefinition, ToolExecutionContext, ToolResult } from "./tool.ts";
+import { validateCommand } from "./bash-sandbox.ts";
+import { isBubblewrapAvailable, spawnDirect, spawnSandboxed } from "./bwrap-sandbox.ts";
 
 interface BashToolInput {
   readonly command: string;
@@ -34,13 +36,17 @@ export function createBashTool(): ToolDefinition {
     },
     async execute(arguments_: ToolArguments, context: ToolExecutionContext): Promise<ToolResult> {
       const input = parseBashToolInput(arguments_);
-      const process = Bun.spawn({
-        cmd: ["zsh", "-lc", input.command],
-        cwd: context.workspaceRoot,
-        stdin: "ignore",
-        stdout: "pipe",
-        stderr: "pipe"
-      });
+
+      const validationError = validateCommand(input.command, context.workspaceRoot);
+      if (validationError !== null) {
+        return { content: validationError, isError: true };
+      }
+
+      const useSandbox = await isBubblewrapAvailable();
+      const spawnOptions = { stdout: "pipe" as const, stderr: "pipe" as const, stdin: "ignore" as const };
+      const process = useSandbox
+        ? spawnSandboxed(input.command, context.workspaceRoot, spawnOptions)
+        : spawnDirect(input.command, context.workspaceRoot, spawnOptions);
 
       const timeoutHandle = setTimeout(() => {
         process.kill();

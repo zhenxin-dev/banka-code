@@ -8,11 +8,9 @@ import { ConfigurationError } from "../errors/banka-error.ts";
 import type { RuntimeConfig } from "../runtime/runtime-config.ts";
 import type { ModelClient } from "./model-client.ts";
 import {
-  AnthropicModelClient,
-  getDefaultAnthropicTimeoutMs
+  AnthropicModelClient
 } from "./anthropic-model-client.ts";
 import {
-  getDefaultOpenAITimeoutMs,
   OpenAIModelClient
 } from "./openai-model-client.ts";
 
@@ -36,8 +34,7 @@ export function createModelClient(config: RuntimeConfig): ModelClient {
     return new AnthropicModelClient({
       apiKey,
       baseUrl,
-      model: config.model,
-      timeoutMs: getDefaultAnthropicTimeoutMs()
+      model: config.model
     });
   }
 
@@ -45,16 +42,14 @@ export function createModelClient(config: RuntimeConfig): ModelClient {
     return new OpenAIModelClient({
       apiKey: normalizeOllamaApiKey(config.apiKey),
       baseUrl: normalizeOllamaBaseUrl(baseUrl),
-      model: config.model,
-      timeoutMs: getDefaultOpenAITimeoutMs()
+      model: config.model
     });
   }
 
   return new OpenAIModelClient({
     apiKey,
     baseUrl,
-    model: config.model,
-    timeoutMs: getDefaultOpenAITimeoutMs()
+    model: config.model
   });
 }
 

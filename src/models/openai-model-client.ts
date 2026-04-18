@@ -17,10 +17,7 @@ export interface OpenAIClientConfig {
   readonly apiKey: string;
   readonly baseUrl: string;
   readonly model: string;
-  readonly timeoutMs: number;
 }
-
-const DEFAULT_OPENAI_TIMEOUT_MS = 60_000;
 
 interface OpenAIRequestTool {
   readonly type: "function";
@@ -82,13 +79,10 @@ export class OpenAIModelClient implements ModelClient {
   readonly #apiKey: string;
   readonly #baseUrl: string;
   readonly #model: string;
-  readonly #timeoutMs: number;
-
   public constructor(config: OpenAIClientConfig) {
     this.#apiKey = config.apiKey;
     this.#baseUrl = trimTrailingSlash(config.baseUrl);
     this.#model = config.model;
-    this.#timeoutMs = config.timeoutMs;
   }
 
   /**
@@ -106,7 +100,6 @@ export class OpenAIModelClient implements ModelClient {
 
     const response = await fetch(`${this.#baseUrl}/chat/completions`, {
       method: "POST",
-      signal: AbortSignal.timeout(this.#timeoutMs),
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${this.#apiKey}`
@@ -297,9 +290,4 @@ function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
 }
 
-/**
- * 返回 openai 默认超时时间。
- */
-export function getDefaultOpenAITimeoutMs(): number {
-  return DEFAULT_OPENAI_TIMEOUT_MS;
-}
+

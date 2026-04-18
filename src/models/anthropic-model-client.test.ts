@@ -48,8 +48,7 @@ describe("AnthropicModelClient", () => {
       const client = new AnthropicModelClient({
         apiKey: "test-key",
         baseUrl: "https://example.com/anthropic/v1",
-        model: "MiniMax-M2.7",
-        timeoutMs: 5_000
+        model: "MiniMax-M2.7"
       });
 
       const result = await client.createAssistantMessage({
