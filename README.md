@@ -179,4 +179,4 @@ bun run build:all  # 构建全平台二进制
 
 ## 许可
 
-MIT License
+[GPLv3](LICENSE)
