@@ -86,16 +86,16 @@ export function Logo(_props: LogoProps): JSX.Element {
   return (
     <box flexDirection="column" alignItems="center">
       <box flexDirection="row" justifyContent="center">
-        <text fg={t.text} attributes={TextAttributes.BOLD}>Banka Code</text>
-        <text fg={t.inactive}> {VERSION} </text>
-        <text fg="#e8a0b0">🌸 </text>
+        <text fg={t.text} attributes={TextAttributes.BOLD} selectable={false}>Banka Code</text>
+        <text fg={t.inactive} selectable={false}> {VERSION} </text>
+        <text fg="#e8a0b0" selectable={false}>🌸 </text>
         <For each={chars()}>
-          {(c) => <text fg={c.color}>{c.ch}</text>}
+          {(c) => <text fg={c.color} selectable={false}>{c.ch}</text>}
         </For>
       </box>
-      <box flexDirection="column" alignItems="stretch" marginBottom={1}>
+      <box flexDirection="column" alignItems="stretch">
         <box flexDirection="row" justifyContent="center">
-          <text fg={t.inactive}>{hitokotoLabel()}</text>
+          <text fg={t.inactive} selectable={false}>{hitokotoLabel()}</text>
         </box>
       </box>
     </box>

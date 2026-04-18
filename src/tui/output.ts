@@ -19,7 +19,7 @@ export function formatBanner(provider: ProviderKind, model: string): string {
   return [
     `${ANSI_CYAN}Banka Code — 神刀觉醒，代码为刃。${ANSI_RESET}`,
     `${ANSI_GRAY}Provider: ${provider} | Model: ${model}${ANSI_RESET}`,
-    `${ANSI_GRAY}输入 /exit 或 /quit 退出。${ANSI_RESET}`
+    `${ANSI_GRAY}输入 /help 查看命令，/exit 或 /quit 退出 Banka Code。${ANSI_RESET}`
   ].join("\n");
 }
 

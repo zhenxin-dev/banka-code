@@ -19,6 +19,7 @@ describe("tui output", () => {
 
     expect(banner).toContain("Banka Code");
     expect(banner).toContain("Provider: openai | Model: gpt-4");
+    expect(banner).toContain("/help");
   });
 
   it("formats assistant reply", () => {

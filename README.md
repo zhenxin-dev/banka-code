@@ -47,8 +47,11 @@ banka -v, --version 显示版本号
 
 | 命令 | 说明 |
 |------|------|
-| `/exit` | 退出 TUI |
-| `/quit` | 退出 TUI |
+| `/help` | 查看内置命令帮助 |
+| `/clear` | 清空当前会话内容 |
+| `/status` | 查看当前会话状态 |
+| `/exit` | 退出 Banka Code |
+| `/quit` | 退出 Banka Code |
 
 ## 环境变量
 

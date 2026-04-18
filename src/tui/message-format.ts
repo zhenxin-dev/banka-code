@@ -5,11 +5,90 @@
  */
 
 /**
+ * TUI 内置命令名。
+ */
+export type BuiltinCommandName = "help" | "clear" | "status" | "exit" | "quit";
+
+/**
+ * TUI 内置命令描述。
+ */
+export interface BuiltinCommandDefinition {
+  readonly name: BuiltinCommandName;
+  readonly command: `/${BuiltinCommandName}`;
+  readonly description: string;
+}
+
+/**
+ * 解析后的内置命令。
+ */
+export interface ParsedBuiltinCommand {
+  readonly name: BuiltinCommandName;
+  readonly raw: string;
+}
+
+const BUILTIN_COMMANDS: readonly BuiltinCommandDefinition[] = [
+  { name: "help", command: "/help", description: "查看内置命令帮助" },
+  { name: "clear", command: "/clear", description: "清空当前会话内容" },
+  { name: "status", command: "/status", description: "查看当前会话状态" },
+  { name: "exit", command: "/exit", description: "退出 Banka Code" },
+  { name: "quit", command: "/quit", description: "退出 Banka Code" }
+] as const;
+
+const BUILTIN_COMMAND_ALIASES: Readonly<Record<string, BuiltinCommandName>> = {
+  "/help": "help",
+  "/clear": "clear",
+  "/status": "status",
+  "/exit": "exit",
+  "/quit": "quit"
+};
+
+/**
+ * 返回全部内置命令定义。
+ */
+export function getBuiltinCommands(): readonly BuiltinCommandDefinition[] {
+  return BUILTIN_COMMANDS;
+}
+
+/**
+ * 解析一条输入中的内置命令。
+ */
+export function parseBuiltinCommand(value: string): ParsedBuiltinCommand | undefined {
+  const prompt = value.trim().toLowerCase();
+  const name = BUILTIN_COMMAND_ALIASES[prompt];
+
+  if (name === undefined) {
+    return undefined;
+  }
+
+  return {
+    name,
+    raw: prompt
+  };
+}
+
+/**
+ * 根据输入前缀返回匹配的内置命令。
+ */
+export function findBuiltinCommands(value: string): readonly BuiltinCommandDefinition[] {
+  const prompt = value.trim().toLowerCase();
+
+  if (!prompt.startsWith("/")) {
+    return [];
+  }
+
+  if (prompt === "/") {
+    return BUILTIN_COMMANDS;
+  }
+
+  return BUILTIN_COMMANDS.filter((command) => command.command.startsWith(prompt));
+}
+
+/**
  * 判断一条输入是否为退出命令。
  */
 export function isExitCommand(value: string): boolean {
-  const prompt = value.trim();
-  return prompt === "/exit" || prompt === "/quit";
+  const command = parseBuiltinCommand(value);
+  return command?.name === "exit" || command?.name === "quit";
 }
 
 /**
