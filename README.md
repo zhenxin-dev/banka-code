@@ -4,14 +4,17 @@
 
 名字来源于 [千恋＊万花](https://www.yuzu-soft.com/products/senren/)（Senren\*Banka）——柚子社十周年纪念作。在这座名为「穗织」的温泉小镇里，万花等待你的指令，一刀斩断一切繁琐的编码工作。
 
+> ⚠️ **项目处于早期开发阶段，请勿用于生产环境。** 安全机制尚未完善，Bash 工具虽有沙箱但仍可能存在绕过手段。
+
 ## 特性
 
 - **TypeScript + Bun** — strict mode、零 `any`、极致性能
-- **Agent 循环** — 流式输出、多轮对话、工具调用，自动迭代直到任务完成
+- **Agent 循环** — 多轮对话、工具调用，自动迭代直到任务完成
 - **千恋万花 TUI** — 樱粉暖橘配色、Ciallo 流光 Logo、灯笼走马灯动画
 - **双模式** — TUI 交互模式 & CLI 单次执行模式
-- **多 Provider** — OpenAI 兼容 / Anthropic 兼容 / Ollama
+- **多 Provider** — 基于 Vercel AI SDK，支持 OpenAI 兼容 / Anthropic
 - **6 个工具** — Bash、Read、Write、Edit、Glob、Grep
+- **Bash 沙箱** — 应用层命令校验 + bubblewrap OS 层隔离
 - **跨平台构建** — 一键编译 Linux / macOS / Windows 原生二进制
 
 ## 快速开始
@@ -52,56 +55,54 @@ banka -v, --version 显示版本号
 使用 Bun 原生 `.env`，无需额外安装 `dotenv`。
 
 ```bash
-BANKA_PROVIDER=openai        # openai | anthropic | ollama
-BANKA_API_KEY=your-api-key   # ollama 可省略
-BANKA_BASE_URL=https://...   # API 端点
+BANKA_PROVIDER=openai        # openai | anthropic
+BANKA_API_KEY=your-api-key   # 必填
+BANKA_BASE_URL=https://...   # API 端点（必填）
 BANKA_MODEL=your-model-id    # 模型名称（必填）
 ```
 
-### OpenAI 兼容
+### OpenAI 兼容（默认）
+
+`openai` provider 兼容所有 OpenAI Chat Completions API：
 
 ```bash
+# OpenAI
 BANKA_PROVIDER=openai
-BANKA_API_KEY=your-api-key
-BANKA_BASE_URL=https://api.example.com/v1
-BANKA_MODEL=your-model-id
+BANKA_API_KEY=sk-...
+BANKA_BASE_URL=https://api.openai.com/v1
+BANKA_MODEL=gpt-4
+
+# Ollama（本地）
+BANKA_PROVIDER=openai
+BANKA_API_KEY=ollama
+BANKA_BASE_URL=http://127.0.0.1:11434/v1
+BANKA_MODEL=qwen3:8b
+
+# GLM（智谱）、Kimi、MiniMax、Qwen（通义）、Xiaomi（MiMo）等
+# 修改 BANKA_BASE_URL 和 BANKA_API_KEY 即可
 ```
 
-向 `${BANKA_BASE_URL}/chat/completions` 发起请求，兼容 OpenAI Chat Completions API。
-
-### Anthropic 兼容
+### Anthropic
 
 ```bash
 BANKA_PROVIDER=anthropic
-BANKA_API_KEY=your-api-key
-BANKA_BASE_URL=https://api.example.com/anthropic/v1
-BANKA_MODEL=your-model-id
+BANKA_API_KEY=sk-ant-...
+BANKA_BASE_URL=https://api.anthropic.com
+BANKA_MODEL=claude-sonnet-4-20250514
 ```
-
-向 `${BANKA_BASE_URL}/messages` 发起请求，兼容 Anthropic Messages API（`anthropic-version: 2023-06-01`）。
-
-### Ollama（本地）
-
-```bash
-BANKA_PROVIDER=ollama
-BANKA_BASE_URL=127.0.0.1:11434
-BANKA_MODEL=qwen3:8b
-```
-
-`BANKA_API_KEY` 可省略。自动补全为 `http://127.0.0.1:11434/v1/chat/completions`。
 
 ## 工具系统
 
 | 工具 | 功能 | 说明 |
 |------|------|------|
-| **Bash** | 执行终端命令 | 30s 超时，输出截断 12KB |
+| **Bash** | 执行终端命令 | 30s 超时，输出截断 12KB，双层沙箱（应用层校验 + bubblewrap） |
 | **Read** | 读取文件 | 限 1MB 以内文本文件 |
 | **Write** | 写入文件 | 自动创建父目录 |
 | **Edit** | 局部编辑文件 | 精确替换，要求目标文本唯一 |
 | **Glob** | 按 pattern 查找文件 | 最多 100 条结果 |
 | **Grep** | 按正则搜索文件内容 | 支持 `content` / `files_with_matches` 输出模式 |
 
-所有文件操作均限制在工作区内，防止路径越界。工具调用在 TUI 中显示人类可读名 + 参数摘要，如 `Bash · ls -la`、`Read · src/tui/app.tsx`。
+所有文件操作通过 `resolveSafePath()` 校验路径，确保不越出工作区。Bash 工具额外具备双层沙箱：应用层命令校验（`bash-sandbox.ts`）和 OS 层 bubblewrap 隔离（`bwrap-sandbox.ts`）。工具调用在 TUI 中显示人类可读名 + 参数摘要，如 `Bash · ls -la`、`Read · src/tui/app.tsx`。
 
 ## 项目结构
 
@@ -114,12 +115,10 @@ banka-code/
 │   │   └── banka-error.ts
 │   ├── messages/             # 会话消息模型
 │   │   └── message.ts
-│   ├── models/               # 模型客户端
-│   │   ├── model-client.ts       # 统一接口
-│   │   ├── create-model-client.ts # 工厂
-│   │   ├── openai-model-client.ts
-│   │   └── anthropic-model-client.ts
+│   ├── models/               # LLM 客户端工厂
+│   │   └── create-model-client.ts
 │   ├── prompt/               # 系统提示词
+│   │   ├── system-prompt.md
 │   │   └── system-prompt.ts
 │   ├── runtime/              # 运行时配置
 │   │   └── runtime-config.ts
@@ -131,6 +130,8 @@ banka-code/
 │   │   ├── execute-tool-call.ts   # 调用执行器
 │   │   ├── create-tools.ts       # 工具集工厂
 │   │   ├── bash-tool.ts
+│   │   ├── bash-sandbox.ts       # Bash 应用层沙箱
+│   │   ├── bwrap-sandbox.ts      # Bash OS 层沙箱
 │   │   ├── file-tools.ts         # Read / Write / Edit
 │   │   ├── glob-tool.ts
 │   │   ├── grep-tool.ts
@@ -171,6 +172,7 @@ bun run build:all  # 构建全平台二进制
 |----|------|
 | 运行时 | [Bun](https://bun.sh) |
 | 语言 | TypeScript（strict + `noUncheckedIndexedAccess` + `exactOptionalPropertyTypes`） |
+| AI SDK | [Vercel AI SDK](https://sdk.vercel.ai)（`ai` + `@ai-sdk/openai` + `@ai-sdk/anthropic`） |
 | TUI 框架 | [OpenTUI](https://opentui.dev) + SolidJS |
 | 包管理 | bun |
 | 构建 | Bun.compile（原生二进制） |
