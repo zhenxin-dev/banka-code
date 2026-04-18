@@ -4,7 +4,7 @@
  * @author 真心
  */
 
-import { generateText, type ToolSet } from "ai";
+import { streamText, type ToolSet, type LanguageModel } from "ai";
 import { ModelResponseError } from "../errors/banka-error.ts";
 import type { ConversationMessage, ToolCall } from "../messages/message.ts";
 import { executeToolCall } from "../tools/execute-tool-call.ts";
@@ -21,6 +21,13 @@ export interface ToolCallObserver {
 }
 
 /**
+ * 文本增量观察器。
+ */
+export interface TextDeltaObserver {
+  (delta: string): void;
+}
+
+/**
  * Agent 执行参数。
  */
 export interface AgentRunOptions {
@@ -32,9 +39,8 @@ export interface AgentRunOptions {
   readonly toolContext: ToolExecutionContext;
   readonly maxIterations: number;
   readonly onToolCall?: ToolCallObserver;
+  readonly onTextDelta?: TextDeltaObserver;
 }
-
-import type { LanguageModel } from "ai";
 
 /**
  * Agent 执行结果。
@@ -62,14 +68,33 @@ export async function runAgentLoop(options: AgentRunOptions): Promise<AgentRunRe
   for (let iteration = 0; iteration < options.maxIterations; iteration += 1) {
     const coreMessages = toModelMessages(messages);
 
-    const result = await generateText({
+    const stream = streamText({
       model: options.languageModel,
       system: options.systemPrompt,
       messages: coreMessages,
       tools: sdkTools
     });
 
-    const toolCallsFromSdk = result.toolCalls.map(
+    let accumulatedText = "";
+    const collectedToolCalls: Array<{ toolCallId: string; toolName: string; input: unknown }> = [];
+
+    for await (const part of stream.fullStream) {
+      switch (part.type) {
+        case "text-delta":
+          accumulatedText += part.text;
+          options.onTextDelta?.(part.text);
+          break;
+        case "tool-call":
+          collectedToolCalls.push({
+            toolCallId: part.toolCallId,
+            toolName: part.toolName,
+            input: part.input
+          });
+          break;
+      }
+    }
+
+    const toolCallsFromSdk = collectedToolCalls.map(
       (tc): ToolCall => ({
         id: tc.toolCallId,
         name: tc.toolName,
@@ -79,7 +104,7 @@ export async function runAgentLoop(options: AgentRunOptions): Promise<AgentRunRe
 
     const assistantMessage: ConversationMessage = {
       role: "assistant",
-      content: result.text,
+      content: accumulatedText,
       toolCalls: toolCallsFromSdk
     };
 
@@ -87,7 +112,7 @@ export async function runAgentLoop(options: AgentRunOptions): Promise<AgentRunRe
 
     if (toolCallsFromSdk.length === 0) {
       return {
-        finalText: result.text,
+        finalText: accumulatedText,
         transcript: [...messages],
         iterations: iteration + 1
       };

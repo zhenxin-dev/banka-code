@@ -23,7 +23,7 @@
 import { TextAttributes, type InputRenderable } from "@opentui/core";
 import { useRenderer, useTerminalDimensions } from "@opentui/solid";
 import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js";
-import type { AgentRunResult } from "../agent/run-agent-loop.ts";
+import type { AgentRunResult, TextDeltaObserver } from "../agent/run-agent-loop.ts";
 import { runAgentLoop } from "../agent/run-agent-loop.ts";
 import type { LanguageModel } from "ai";
 import type { ConversationMessage, ToolCall } from "../messages/message.ts";
@@ -39,7 +39,7 @@ interface UiEntry {
   readonly id: string;
   readonly kind: "user" | "assistant" | "tool" | "error" | "status";
   readonly title: string;
-  readonly body: string;
+  body: string;
 }
 
 export interface TuiAppProps {
@@ -96,6 +96,9 @@ export function TuiApp(props: TuiAppProps) {
     setBusy(true);
     appendEntry(setEntries, createEntry("user", "你", prompt));
 
+    const streamingEntry = createEntry("assistant", "Banka Code", "");
+    appendEntry(setEntries, streamingEntry);
+
     try {
       const result = await runSingleTurn({
         systemPrompt: props.systemPrompt,
@@ -107,14 +110,17 @@ export function TuiApp(props: TuiAppProps) {
         maxIterations: props.maxIterations,
         onToolCall(toolCall) {
           appendEntry(setEntries, createEntry("tool", "tool", formatToolCallEntry(toolCall)));
+        },
+        onTextDelta(delta) {
+          streamingEntry.body += delta;
+          setEntries((prev) => [...prev]);
         }
       });
 
+      streamingEntry.body = result.finalText || "（空回复）";
+      setEntries((prev) => [...prev]);
+
       setPreviousMessages(result.transcript);
-      appendEntry(
-        setEntries,
-        createEntry("assistant", "Banka Code", result.finalText || "（空回复）")
-      );
       appendEntry(
         setEntries,
         createEntry("status", "status", `✓ ${result.iterations} 轮`)
@@ -392,6 +398,7 @@ interface SingleTurnOptions {
   readonly toolContext: ToolExecutionContext;
   readonly maxIterations: number;
   readonly onToolCall: (toolCall: ToolCall) => void;
+  readonly onTextDelta: TextDeltaObserver;
 }
 
 async function runSingleTurn(options: SingleTurnOptions): Promise<AgentRunResult> {
@@ -405,6 +412,9 @@ async function runSingleTurn(options: SingleTurnOptions): Promise<AgentRunResult
     maxIterations: options.maxIterations,
     onToolCall(toolCall) {
       options.onToolCall(toolCall);
+    },
+    onTextDelta(delta) {
+      options.onTextDelta(delta);
     }
   });
 }

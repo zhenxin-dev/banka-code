@@ -9,41 +9,64 @@ import type { ConversationMessage } from "../messages/message.ts";
 import type { ToolArguments, ToolDefinition, ToolExecutionContext, ToolResult } from "../tools/tool.ts";
 import { ToolRegistry } from "../tools/tool-registry.ts";
 
-const fakeGenerateText = mock<(options: Record<string, unknown>) => Promise<unknown>>();
+type StreamPart =
+  | { type: "text-delta"; text: string }
+  | { type: "tool-call"; toolCallId: string; toolName: string; input: Record<string, string> }
+  | { type: "finish-step" }
+  | { type: "finish" };
+
+const fakeStreamText = mock<(options: Record<string, unknown>) => { fullStream: AsyncIterable<StreamPart> }>();
 
 mock.module("ai", () => ({
-  generateText: fakeGenerateText
+  streamText: fakeStreamText
 }));
 
 const { runAgentLoop } = await import("./run-agent-loop.ts");
 
-function makeResult(text: string, toolCalls: Array<{ toolCallId: string; toolName: string; input: Record<string, string> }>): unknown {
-  return {
-    text,
-    toolCalls,
-    steps: [],
-    usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-    totalUsage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-    finishReason: toolCalls.length > 0 ? "tool-calls" : "stop"
-  };
+async function* yieldParts(parts: StreamPart[]): AsyncGenerator<StreamPart> {
+  for (const part of parts) {
+    yield part;
+  }
+}
+
+function makeStreamResult(parts: StreamPart[]): { fullStream: AsyncIterable<StreamPart> } {
+  return { fullStream: yieldParts(parts) };
+}
+
+function textPart(text: string): StreamPart {
+  return { type: "text-delta", text };
+}
+
+function toolCallPart(toolCallId: string, toolName: string, input: Record<string, string>): StreamPart {
+  return { type: "tool-call", toolCallId, toolName, input };
+}
+
+function finishParts(): StreamPart[] {
+  return [{ type: "finish-step" }, { type: "finish" }];
 }
 
 describe("runAgentLoop", () => {
   beforeEach(() => {
-    fakeGenerateText.mockClear();
+    fakeStreamText.mockClear();
   });
 
   it("executes tool calls until the assistant returns final text", async () => {
     const capturedRequests: Array<{ messages: unknown[] }> = [];
 
-    fakeGenerateText
-      .mockImplementationOnce(async (options) => {
+    fakeStreamText
+      .mockImplementationOnce((options) => {
         capturedRequests.push({ messages: options.messages as unknown[] });
-        return makeResult("", [{ toolCallId: "call_1", toolName: "echo_tool", input: { text: "hello" } }]);
+        return makeStreamResult([
+          toolCallPart("call_1", "echo_tool", { text: "hello" }),
+          ...finishParts()
+        ]);
       })
-      .mockImplementationOnce(async (options) => {
+      .mockImplementationOnce((options) => {
         capturedRequests.push({ messages: options.messages as unknown[] });
-        return makeResult("done", []);
+        return makeStreamResult([
+          textPart("done"),
+          ...finishParts()
+        ]);
       });
 
     const registry = new ToolRegistry([createEchoTool()]);
@@ -77,9 +100,12 @@ describe("runAgentLoop", () => {
   it("appends previous messages before the new user prompt", async () => {
     const capturedRequests: Array<{ messages: unknown[] }> = [];
 
-    fakeGenerateText.mockImplementationOnce(async (options) => {
+    fakeStreamText.mockImplementationOnce((options) => {
       capturedRequests.push({ messages: options.messages as unknown[] });
-      return makeResult("continued", []);
+      return makeStreamResult([
+        textPart("continued"),
+        ...finishParts()
+      ]);
     });
 
     const registry = new ToolRegistry([createEchoTool()]);
@@ -104,9 +130,15 @@ describe("runAgentLoop", () => {
   });
 
   it("emits tool call notifications during execution", async () => {
-    fakeGenerateText
-      .mockImplementationOnce(async () => makeResult("", [{ toolCallId: "call_2", toolName: "echo_tool", input: { text: "world" } }]))
-      .mockImplementationOnce(async () => makeResult("done", []));
+    fakeStreamText
+      .mockImplementationOnce(() => makeStreamResult([
+        toolCallPart("call_2", "echo_tool", { text: "world" }),
+        ...finishParts()
+      ]))
+      .mockImplementationOnce(() => makeStreamResult([
+        textPart("done"),
+        ...finishParts()
+      ]));
 
     const observedCalls: string[] = [];
     const registry = new ToolRegistry([createEchoTool()]);
@@ -123,6 +155,32 @@ describe("runAgentLoop", () => {
     });
 
     expect(observedCalls).toEqual(["echo_tool:call_2"]);
+  });
+
+  it("streams text deltas through onTextDelta callback", async () => {
+    fakeStreamText.mockImplementationOnce(() => makeStreamResult([
+      textPart("Hello"),
+      textPart(" "),
+      textPart("world"),
+      ...finishParts()
+    ]));
+
+    const deltas: string[] = [];
+    const registry = new ToolRegistry([createEchoTool()]);
+    const result = await runAgentLoop({
+      systemPrompt: "test",
+      initialUserPrompt: "greet",
+      languageModel: {} as never,
+      toolRegistry: registry,
+      toolContext: { workspaceRoot: "/tmp/banka" },
+      maxIterations: 2,
+      onTextDelta(delta) {
+        deltas.push(delta);
+      }
+    });
+
+    expect(deltas).toEqual(["Hello", " ", "world"]);
+    expect(result.finalText).toBe("Hello world");
   });
 });
 
