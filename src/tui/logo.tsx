@@ -6,7 +6,7 @@
 
 import { TextAttributes } from "@opentui/core";
 import type { JSX } from "@opentui/solid";
-import { For, Show, createSignal, onCleanup, onMount } from "solid-js";
+import { For, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { fetchHitokoto, type Hitokoto } from "./hitokoto.ts";
 import { getTheme } from "./theme.ts";
 
@@ -70,6 +70,11 @@ export function Logo(_props: LogoProps): JSX.Element {
     void fetchHitokoto().then((h) => setHitokoto(h));
   });
 
+  const hitokotoLabel = createMemo((): string => {
+    const h = hitokoto();
+    return h !== null ? `「${h.text}」` : "";
+  });
+
   const chars = (): ReadonlyArray<{ readonly ch: string; readonly color: string }> => {
     const now = tick();
     return [...GREETING].map((ch, i) => ({
@@ -88,17 +93,11 @@ export function Logo(_props: LogoProps): JSX.Element {
           {(c) => <text fg={c.color}>{c.ch}</text>}
         </For>
       </box>
-      <Show when={hitokoto()}>
-        {(h: () => Hitokoto) => {
-          return (
-            <box flexDirection="column" alignItems="stretch" marginBottom={1}>
-              <box flexDirection="row" justifyContent="center">
-                <text fg={t.inactive}>{`「${h().text}」`}</text>
-              </box>
-            </box>
-          );
-        }}
-      </Show>
+      <box flexDirection="column" alignItems="stretch" marginBottom={1}>
+        <box flexDirection="row" justifyContent="center">
+          <text fg={t.inactive}>{hitokotoLabel()}</text>
+        </box>
+      </box>
     </box>
   );
 }

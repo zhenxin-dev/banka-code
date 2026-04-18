@@ -130,9 +130,10 @@ describe("runAgentLoop", () => {
     ]);
   });
 
-  it("emits tool call notifications during execution", async () => {
+  it("emits tool call notifications during stream consumption", async () => {
     fakeStreamText
       .mockImplementationOnce(() => makeStreamResult([
+        textPart("thinking"),
         toolCallPart("call_2", "echo_tool", { text: "world" }),
         ...finishParts()
       ]))
@@ -141,7 +142,7 @@ describe("runAgentLoop", () => {
         ...finishParts()
       ]));
 
-    const observedCalls: string[] = [];
+    const events: Array<{ type: "text" | "tool"; value: string }> = [];
     const registry = new ToolRegistry([createEchoTool()]);
     await runAgentLoop({
       systemPrompt: "test-system-prompt",
@@ -151,11 +152,18 @@ describe("runAgentLoop", () => {
       toolContext: { workspaceRoot: "/tmp/banka" },
       maxIterations: 4,
       onToolCall(toolCall) {
-        observedCalls.push(`${toolCall.name}:${toolCall.id}`);
+        events.push({ type: "tool", value: `${toolCall.name}:${toolCall.id}` });
+      },
+      onTextDelta(delta) {
+        events.push({ type: "text", value: delta });
       }
     });
 
-    expect(observedCalls).toEqual(["echo_tool:call_2"]);
+    expect(events).toEqual([
+      { type: "text", value: "thinking" },
+      { type: "tool", value: "echo_tool:call_2" },
+      { type: "text", value: "done" }
+    ]);
   });
 
   it("streams text deltas through onTextDelta callback", async () => {

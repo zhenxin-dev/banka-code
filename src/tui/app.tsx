@@ -97,6 +97,7 @@ export function TuiApp(props: TuiAppProps) {
     appendEntry(setEntries, createEntry("user", "你", prompt));
 
     const streamingEntry = createEntry("assistant", "Banka Code", "");
+    let currentStreamingId = streamingEntry.id;
     appendEntry(setEntries, streamingEntry);
 
     try {
@@ -109,14 +110,40 @@ export function TuiApp(props: TuiAppProps) {
         toolContext: props.toolContext,
         maxIterations: props.maxIterations,
         onToolCall(toolCall) {
-          appendEntry(setEntries, createEntry("tool", "tool", formatToolCallEntry(toolCall)));
+          const currentId = currentStreamingId;
+          setEntries((prev) => {
+            const current = prev.find((e) => e.id === currentId);
+            // 无文本时替换为 tool entry，有文本时保留并追加
+            if (current !== undefined && current.body === "") {
+              return [...prev.filter((e) => e.id !== currentId), createEntry("tool", "tool", formatToolCallEntry(toolCall))];
+            }
+            return [...prev, createEntry("tool", "tool", formatToolCallEntry(toolCall))];
+          });
+
+          const nextEntry = createEntry("assistant", "Banka Code", "");
+          currentStreamingId = nextEntry.id;
+          appendEntry(setEntries, nextEntry);
         },
         onTextDelta(delta) {
-          updateEntryBody(setEntries, streamingEntry.id, (body) => body + delta);
+          updateEntryBody(setEntries, currentStreamingId, (body) => body + delta);
         }
       });
 
-      updateEntryBody(setEntries, streamingEntry.id, () => result.finalText || "（空回复）");
+      // 最终更新 last streaming entry：写入 finalText 或移除空白
+      const lastId = currentStreamingId;
+      setEntries((prev) => {
+        const last = prev.find((e) => e.id === lastId);
+        if (last === undefined) {
+          return prev;
+        }
+        if (result.finalText !== "") {
+          return prev.map((e) => e.id === lastId ? { ...e, body: result.finalText } : e);
+        }
+        if (last.body === "") {
+          return prev.filter((e) => e.id !== lastId);
+        }
+        return prev;
+      });
 
       setPreviousMessages(result.transcript);
       appendEntry(
@@ -134,15 +161,15 @@ export function TuiApp(props: TuiAppProps) {
   return (
     <box width="100%" height="100%" flexDirection="column" paddingX={1} paddingTop={1} paddingBottom={0}>
       {/* ── Header: Logo + Info ── */}
-      <box flexDirection="column" alignItems="center">
+      <box flexDirection="column" alignItems="center" flexShrink={0}>
         <Logo />
       </box>
 
-      <box>
+      <box flexShrink={0}>
         <text fg={t.text}> </text>
       </box>
 
-      <box>
+      <box flexShrink={0}>
         <text fg={t.divider}> {titledRule(dividerWidth(), "")}</text>
       </box>
 

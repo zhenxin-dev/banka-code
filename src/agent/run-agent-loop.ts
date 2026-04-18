@@ -83,13 +83,20 @@ export async function runAgentLoop(options: AgentRunOptions): Promise<AgentRunRe
           break;
         case "error":
           throw new ModelResponseError(String(part.error));
-        case "tool-call":
+        case "tool-call": {
+          const toolCall: ToolCall = {
+            id: part.toolCallId,
+            name: part.toolName,
+            argumentsJson: JSON.stringify(part.input)
+          };
           collectedToolCalls.push({
             toolCallId: part.toolCallId,
             toolName: part.toolName,
             input: part.input
           });
+          options.onToolCall?.(toolCall);
           break;
+        }
       }
     }
 
@@ -118,7 +125,6 @@ export async function runAgentLoop(options: AgentRunOptions): Promise<AgentRunRe
     }
 
     for (const toolCall of toolCallsFromSdk) {
-      options.onToolCall?.(toolCall);
       const toolResult = await executeToolCall(toolCall, options.toolRegistry, options.toolContext);
       messages.push(toolResult);
     }
