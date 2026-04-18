@@ -7,10 +7,11 @@
 /**
  * 可用的 provider 类型。
  *
- * openai: 所有 OpenAI 兼容 API（包括 Ollama、GLM、Kimi 等）。
+ * openai: OpenAI Responses API（默认）。
+ * openai-chat: OpenAI Chat Completions API（兼容不支持 Responses API 的第三方服务）。
  * anthropic: Anthropic 原生 API。
  */
-export type ProviderKind = "openai" | "anthropic";
+export type ProviderKind = "openai" | "openai-chat" | "anthropic";
 
 /**
  * Banka Code 运行时配置。
@@ -56,6 +57,7 @@ function parseProviderKind(value: string | undefined): ProviderKind {
 
   switch (value) {
     case "openai":
+    case "openai-chat":
     case "anthropic":
       return value;
     default:

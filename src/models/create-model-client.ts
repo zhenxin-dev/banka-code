@@ -34,5 +34,9 @@ export function createLanguageModel(config: RuntimeConfig): LanguageModel {
     ...(baseUrl === undefined ? {} : { baseURL: baseUrl })
   });
 
+  if (config.provider === "openai-chat") {
+    return provider.chat(config.model);
+  }
+
   return provider.languageModel(config.model);
 }
