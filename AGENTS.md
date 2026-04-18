@@ -4,8 +4,10 @@
 
 **Banka Code** 是一个使用 TypeScript + Bun 构建的 Coding Agent，配备千恋万花风格的 TUI 终端界面。
 
+Agent 接收用户指令后进入迭代循环：调用 LLM → 解析工具调用 → 执行工具 → 将结果送回 LLM → 重复，直到模型不再请求工具或达到最大迭代次数。支持流式输出和多轮对话。
+
 - **运行时**：Bun
-- **语言**：TypeScript（strict mode）
+- **语言**：TypeScript（strict mode，额外启用 `noUncheckedIndexedAccess`、`exactOptionalPropertyTypes`、`useUnknownInCatchVariables`、`noImplicitOverride`）
 - **TUI**：OpenTUI + SolidJS
 - **包管理**：bun
 
@@ -47,6 +49,7 @@
 ### Bun
 
 - 使用 Bun 原生 API（`Bun.file()`、`Bun.spawn()`、`Bun.Glob` 等），不引入 Node.js polyfill
+  - 注意：当前 `file-tools.ts` 和 `glob-tool.ts` / `grep-tool.ts` 使用了 `node:fs/promises` 的 `mkdir` / `stat` 和 `node:path` 的 `join` / `relative` / `dirname`，这是合理的——Bun 兼容这些 Node.js API
 - 测试使用 `bun test`
 - 脚本使用 `bun run` 执行
 
@@ -55,6 +58,90 @@
 - 添加依赖前先检查项目是否已有同类能力
 - 优先已有依赖，一次只更新一个主要依赖
 - 记录引入原因（commit message 或注释）
+- 当前生产依赖仅三个：`@opentui/core`、`@opentui/solid`、`solid-js`
+
+## 架构
+
+### 核心流程
+
+```
+用户输入
+  → index.ts（CLI 入口，解析参数）
+  → runAgentLoop()（迭代循环）
+    → ModelClient.createAssistantMessage()（调用 LLM）
+    → 解析 AssistantMessage.toolCalls
+    → executeToolCall()（执行工具）
+    → 将 ToolResultMessage 追加到消息列表
+    → 重复直到无工具调用或达到 maxIterations
+```
+
+### 模块职责
+
+| 模块 | 职责 | 关键文件 |
+|------|------|----------|
+| `agent/` | Agent 主循环（流式 + 多轮对话） | `run-agent-loop.ts` |
+| `errors/` | 自定义错误层级 | `banka-error.ts`（BankaError → ConfigurationError / ModelResponseError / ToolExecutionError / PathSecurityError） |
+| `messages/` | 会话消息模型 | `message.ts`（UserMessage / AssistantMessage / ToolResultMessage） |
+| `models/` | LLM 客户端 | `model-client.ts`（接口）、`openai-model-client.ts`、`anthropic-model-client.ts`、`create-model-client.ts`（工厂） |
+| `prompt/` | 系统提示词 | `system-prompt.ts`（万花角色设定） |
+| `runtime/` | 环境变量加载 | `runtime-config.ts` |
+| `shared/` | 共享工具 | `is-record.ts`（类型守卫） |
+| `tools/` | 工具系统 | 见下方工具系统章节 |
+| `tui/` | OpenTUI + SolidJS 界面 | `app.tsx`（主界面）、`logo.tsx`、`spinner.tsx`、`theme.ts`、`output.ts`、`message-format.ts`、`hitokoto.ts`、`run-tui.tsx` |
+
+### 模型客户端
+
+`ModelClient` 接口定义了两个方法：
+- `createAssistantMessage()` — 一次性调用
+- `streamAssistantMessage?()` — 流式调用（可选）
+
+OpenAI 和 Anthropic 客户端均基于原生 `fetch`，不依赖第三方 SDK。OpenAI 客户端同时也用于 Ollama（因为 Ollama 兼容 OpenAI API）。
+
+### 错误层级
+
+```
+BankaError (base)
+├── ConfigurationError    — 运行时配置错误
+├── ModelResponseError    — 模型响应格式错误
+├── ToolExecutionError    — 工具执行错误
+└── PathSecurityError     — 路径越界错误
+```
+
+## Provider 支持
+
+| Provider | `BANKA_PROVIDER` 值 | 需要 API Key | 端点路径 |
+|----------|---------------------|-------------|----------|
+| OpenAI 兼容 | `openai`（默认） | 是 | `${BASE_URL}/chat/completions` |
+| Anthropic 兼容 | `anthropic` | 是 | `${BASE_URL}/messages` |
+| Ollama | `ollama` | 否（默认 `ollama`） | 自动补全为 `${BASE_URL}/v1/chat/completions` |
+
+注意：`BANKA_PROVIDER` 的值是 `openai` / `anthropic` / `ollama`，不是 `openai-compatible`。
+
+## 工具系统
+
+### 架构
+
+```
+ToolDefinition (接口)
+  → ToolRegistry (名称索引)
+  → executeToolCall() (调用执行器)
+  → createTools() (工具集工厂)
+```
+
+### 工具列表
+
+| 工具名 | 功能 | 源文件 | 关键细节 |
+|--------|------|--------|----------|
+| `Bash` | 执行终端命令 | `src/tools/bash-tool.ts` | zsh -lc、30s 超时、输出截断 12KB |
+| `Read` | 读取文件 | `src/tools/file-tools.ts` | 限 1MB 文本文件 |
+| `Write` | 写入文件 | `src/tools/file-tools.ts` | 自动创建父目录 |
+| `Edit` | 局部编辑文件 | `src/tools/file-tools.ts` | 精确替换，目标文本必须唯一 |
+| `Glob` | 按 pattern 查找文件 | `src/tools/glob-tool.ts` | 最多 100 条结果，使用 `Bun.Glob` |
+| `Grep` | 按正则搜索文件内容 | `src/tools/grep-tool.ts` | 支持 content / files_with_matches 模式，跳过二进制文件 |
+
+### 安全机制
+
+所有文件操作通过 `resolveSafePath()` 校验路径，确保不越出 `workspaceRoot`。
 
 ## 意图路由
 
@@ -76,12 +163,13 @@
 - 常量：`UPPER_SNAKE_CASE`（`MAX_RETRIES`）
 - 类型参数：`PascalCase`，单个字母仅用于简单泛型（`T`、`K`、`V`）
 - **工具内部名**：`PascalCase`（`Bash` / `Read` / `Write` / `Edit` / `Glob` / `Grep`）
+- 私有字段：`#` 前缀（ECMAScript private）
 
 ### 结构
 
 - 一个文件一个职责
-- 公共 API 通过 `index.ts` 统一导出
-- 错误处理使用自定义 `Error` 子类，不抛裸字符串
+- 公共 API 通过 `index.ts` 统一导出（当前各模块尚未建立 barrel export，入口文件直接引用路径）
+- 错误处理使用自定义 `BankaError` 子类，不抛裸字符串
 - 异步操作使用 `async/await`，不用 `.then()` 链
 
 ### 注释
@@ -92,29 +180,11 @@
 
 ### TUI / 视觉
 
-- 配色使用千恋万花主题（樱粉、暖橘、淡金、赤褐）
-- 适配透明终端背景：边框和文字用柔和高对比色，避免厚重实底
+- 配色使用千恋万花主题（樱粉、暖橘、淡金、赤褐），定义在 `src/tui/theme.ts`
+- Logo 组件含 Ciallo 流光动画（字符逐帧着色）
+- 启动时通过 Hitokoto API 获取一言
 - 工具调用在 TUI 中显示人类可读名 + 参数摘要（如 `Bash · ls -la`、`Read · src/tui/app.tsx`）
-
-## Provider 支持
-
-| Provider | 环境变量 `BANKA_PROVIDER` | 需要 API Key | 说明 |
-|----------|--------------------------|-------------|------|
-| OpenAI 兼容 | `openai-compatible` | 是 | 默认 |
-| Anthropic 兼容 | `anthropic-compatible` | 是 | |
-| Ollama | `ollama` | 否 | 自动补全 base URL |
-| Mock | `mock`（自动回退） | 否 | 无 `.env` 时使用 |
-
-## 工具系统
-
-| 工具名 | 功能 | 源文件 |
-|--------|------|--------|
-| `Bash` | 执行终端命令 | `src/tools/bash-tool.ts` |
-| `Read` | 读取文件 | `src/tools/file-tools.ts` |
-| `Write` | 写入文件 | `src/tools/file-tools.ts` |
-| `Edit` | 局部编辑文件 | `src/tools/file-tools.ts` |
-| `Glob` | 按 pattern 查找文件 | `src/tools/glob-tool.ts` |
-| `Grep` | 按正则搜索文件内容 | `src/tools/grep-tool.ts` |
+- 状态栏使用灯笼走马灯动画（三角波 + 暖色尾焰）
 
 ## 执行协议
 
@@ -163,9 +233,19 @@
 
 ## 测试
 
-- 文件命名：`{模块名}.test.ts`，与源文件同目录或放 `__tests__/`
+- 文件命名：`{模块名}.test.ts`，与源文件同目录
 - 核心业务、边界、异常必须覆盖
 - 测试互不依赖，数据自包含
+- 当前测试覆盖：agent loop、model client 工厂、runtime config、file tools、glob tool、grep tool、safe path、output、message format
+
+## 构建
+
+```bash
+bun run build      # 构建当前平台原生二进制 → dist/
+bun run build:all  # 构建 Linux/macOS/Windows 全平台二进制
+```
+
+构建脚本 `scripts/build.ts` 使用 `Bun.build()` + `compile` 选项，输出自包含二进制文件。构建时会通过 `define` 注入 `BANKA_CODE_VERSION`。
 
 ## Git 提交
 
