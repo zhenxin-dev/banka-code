@@ -5,7 +5,7 @@
  */
 
 import { render } from "@opentui/solid";
-import type { ModelClient } from "../models/model-client.ts";
+import type { LanguageModel } from "ai";
 import type { RuntimeConfig } from "../runtime/runtime-config.ts";
 import type { ToolExecutionContext } from "../tools/tool.ts";
 import { ToolRegistry } from "../tools/tool-registry.ts";
@@ -17,7 +17,7 @@ import { TuiApp } from "./app.tsx";
 export interface TuiRunOptions {
   readonly systemPrompt: string;
   readonly runtimeConfig: RuntimeConfig;
-  readonly modelClient: ModelClient;
+  readonly languageModel: LanguageModel;
   readonly toolRegistry: ToolRegistry;
   readonly toolContext: ToolExecutionContext;
   readonly maxIterations: number;
@@ -32,7 +32,7 @@ export async function runTui(options: TuiRunOptions): Promise<void> {
       <TuiApp
         systemPrompt={options.systemPrompt}
         runtimeConfig={options.runtimeConfig}
-        modelClient={options.modelClient}
+        languageModel={options.languageModel}
         toolRegistry={options.toolRegistry}
         toolContext={options.toolContext}
         maxIterations={options.maxIterations}

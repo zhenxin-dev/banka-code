@@ -25,8 +25,8 @@ import { useRenderer, useTerminalDimensions } from "@opentui/solid";
 import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { AgentRunResult } from "../agent/run-agent-loop.ts";
 import { runAgentLoop } from "../agent/run-agent-loop.ts";
+import type { LanguageModel } from "ai";
 import type { ConversationMessage, ToolCall } from "../messages/message.ts";
-import type { ModelClient } from "../models/model-client.ts";
 import type { RuntimeConfig } from "../runtime/runtime-config.ts";
 import type { ToolExecutionContext } from "../tools/tool.ts";
 import { ToolRegistry } from "../tools/tool-registry.ts";
@@ -45,7 +45,7 @@ interface UiEntry {
 export interface TuiAppProps {
   readonly systemPrompt: string;
   readonly runtimeConfig: RuntimeConfig;
-  readonly modelClient: ModelClient;
+  readonly languageModel: LanguageModel;
   readonly toolRegistry: ToolRegistry;
   readonly toolContext: ToolExecutionContext;
   readonly maxIterations: number;
@@ -101,7 +101,7 @@ export function TuiApp(props: TuiAppProps) {
         systemPrompt: props.systemPrompt,
         prompt,
         previousMessages: previousMessages(),
-        modelClient: props.modelClient,
+        languageModel: props.languageModel,
         toolRegistry: props.toolRegistry,
         toolContext: props.toolContext,
         maxIterations: props.maxIterations,
@@ -223,8 +223,6 @@ function toProviderLabel(provider: RuntimeConfig["provider"]): string {
       return "OpenAI";
     case "anthropic":
       return "Anthropic";
-    case "ollama":
-      return "Ollama";
   }
 }
 
@@ -389,7 +387,7 @@ interface SingleTurnOptions {
   readonly systemPrompt: string;
   readonly prompt: string;
   readonly previousMessages: readonly ConversationMessage[];
-  readonly modelClient: ModelClient;
+  readonly languageModel: LanguageModel;
   readonly toolRegistry: ToolRegistry;
   readonly toolContext: ToolExecutionContext;
   readonly maxIterations: number;
@@ -401,7 +399,7 @@ async function runSingleTurn(options: SingleTurnOptions): Promise<AgentRunResult
     systemPrompt: options.systemPrompt,
     initialUserPrompt: options.prompt,
     previousMessages: options.previousMessages,
-    modelClient: options.modelClient,
+    languageModel: options.languageModel,
     toolRegistry: options.toolRegistry,
     toolContext: options.toolContext,
     maxIterations: options.maxIterations,

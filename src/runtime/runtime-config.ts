@@ -6,8 +6,11 @@
 
 /**
  * 可用的 provider 类型。
+ *
+ * openai: 所有 OpenAI 兼容 API（包括 Ollama、GLM、Kimi 等）。
+ * anthropic: Anthropic 原生 API。
  */
-export type ProviderKind = "openai" | "anthropic" | "ollama";
+export type ProviderKind = "openai" | "anthropic";
 
 /**
  * Banka Code 运行时配置。
@@ -29,19 +32,19 @@ export function loadRuntimeConfig(workspaceRoot: string): RuntimeConfig {
   const baseUrl = Bun.env.BANKA_BASE_URL?.trim();
   const model = Bun.env.BANKA_MODEL?.trim();
 
-  if (isIncompleteApiConfig(provider, apiKey, baseUrl)) {
-    throw new Error("缺少 API 配置。请设置 BANKA_API_KEY、BANKA_BASE_URL 和 BANKA_MODEL 环境变量。");
+  if (model === undefined || model === "") {
+    throw new Error("缺少 BANKA_MODEL 配置。必须显式指定模型。");
   }
 
-  if (model === undefined || model === "") {
-    throw new Error("缺少 BANKA_MODEL 配置。已配置 API 访问参数时，必须显式指定模型。");
+  if (apiKey === undefined || apiKey === "") {
+    throw new Error("缺少 BANKA_API_KEY 配置。请设置 BANKA_API_KEY 环境变量。");
   }
 
   return {
     workspaceRoot,
     provider,
     model,
-    ...(apiKey === undefined || apiKey === "" ? {} : { apiKey }),
+    apiKey,
     ...(baseUrl === undefined || baseUrl === "" ? {} : { baseUrl })
   };
 }
@@ -54,25 +57,8 @@ function parseProviderKind(value: string | undefined): ProviderKind {
   switch (value) {
     case "openai":
     case "anthropic":
-    case "ollama":
       return value;
     default:
       return "openai";
   }
-}
-
-function isIncompleteApiConfig(
-  provider: ProviderKind,
-  apiKey: string | undefined,
-  baseUrl: string | undefined
-): boolean {
-  if (baseUrl === undefined || baseUrl === "") {
-    return true;
-  }
-
-  if (provider === "ollama") {
-    return false;
-  }
-
-  return apiKey === undefined || apiKey === "";
 }

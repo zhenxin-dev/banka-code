@@ -4,12 +4,14 @@
  * @author 真心
  */
 
+import { generateText, type ToolSet } from "ai";
 import { ModelResponseError } from "../errors/banka-error.ts";
 import type { ConversationMessage, ToolCall } from "../messages/message.ts";
-import type { ModelClient } from "../models/model-client.ts";
 import { executeToolCall } from "../tools/execute-tool-call.ts";
-import type { ToolExecutionContext } from "../tools/tool.ts";
+import type { ToolDefinition, ToolExecutionContext } from "../tools/tool.ts";
 import { ToolRegistry } from "../tools/tool-registry.ts";
+import type { ModelMessage, AssistantContent } from "@ai-sdk/provider-utils";
+import { jsonSchema } from "@ai-sdk/provider-utils";
 
 /**
  * 工具调用观察器。
@@ -19,26 +21,20 @@ export interface ToolCallObserver {
 }
 
 /**
- * 文本增量观察器。
- */
-export interface TextDeltaObserver {
-  (text: string): void;
-}
-
-/**
  * Agent 执行参数。
  */
 export interface AgentRunOptions {
   readonly systemPrompt: string;
   readonly initialUserPrompt: string;
   readonly previousMessages?: readonly ConversationMessage[];
-  readonly modelClient: ModelClient;
+  readonly languageModel: LanguageModel;
   readonly toolRegistry: ToolRegistry;
   readonly toolContext: ToolExecutionContext;
   readonly maxIterations: number;
   readonly onToolCall?: ToolCallObserver;
-  readonly onTextDelta?: TextDeltaObserver;
 }
+
+import type { LanguageModel } from "ai";
 
 /**
  * Agent 执行结果。
@@ -61,30 +57,43 @@ export async function runAgentLoop(options: AgentRunOptions): Promise<AgentRunRe
     }
   ];
 
-  for (let iteration = 0; iteration < options.maxIterations; iteration += 1) {
-    const completionRequest = {
-      systemPrompt: options.systemPrompt,
-      messages,
-      tools: options.toolRegistry.list()
-    };
+  const sdkTools = toSdkTools(options.toolRegistry.list());
 
-    const assistantMessage = await fetchAssistantMessage(
-      options.modelClient,
-      completionRequest,
-      options.onTextDelta
+  for (let iteration = 0; iteration < options.maxIterations; iteration += 1) {
+    const coreMessages = toModelMessages(messages);
+
+    const result = await generateText({
+      model: options.languageModel,
+      system: options.systemPrompt,
+      messages: coreMessages,
+      tools: sdkTools
+    });
+
+    const toolCallsFromSdk = result.toolCalls.map(
+      (tc): ToolCall => ({
+        id: tc.toolCallId,
+        name: tc.toolName,
+        argumentsJson: JSON.stringify(tc.input)
+      })
     );
+
+    const assistantMessage: ConversationMessage = {
+      role: "assistant",
+      content: result.text,
+      toolCalls: toolCallsFromSdk
+    };
 
     messages.push(assistantMessage);
 
-    if (assistantMessage.toolCalls.length === 0) {
+    if (toolCallsFromSdk.length === 0) {
       return {
-        finalText: assistantMessage.content,
+        finalText: result.text,
         transcript: [...messages],
         iterations: iteration + 1
       };
     }
 
-    for (const toolCall of assistantMessage.toolCalls) {
+    for (const toolCall of toolCallsFromSdk) {
       options.onToolCall?.(toolCall);
       const toolResult = await executeToolCall(toolCall, options.toolRegistry, options.toolContext);
       messages.push(toolResult);
@@ -96,20 +105,54 @@ export async function runAgentLoop(options: AgentRunOptions): Promise<AgentRunRe
   );
 }
 
-function fetchAssistantMessage(
-  modelClient: ModelClient,
-  request: { systemPrompt: string; messages: readonly ConversationMessage[]; tools: readonly import("../tools/tool.ts").ToolDefinition[] },
-  onTextDelta?: TextDeltaObserver
-): Promise<import("../messages/message.ts").AssistantMessage> {
-  const completionRequest = {
-    systemPrompt: request.systemPrompt,
-    messages: request.messages,
-    tools: request.tools
-  };
+function toModelMessages(messages: readonly ConversationMessage[]): ModelMessage[] {
+  return messages.map((msg): ModelMessage => {
+    switch (msg.role) {
+      case "user":
+        return { role: "user", content: msg.content };
+      case "assistant": {
+        const content: AssistantContent = [
+          ...(msg.content !== "" ? [{ type: "text" as const, text: msg.content }] : []),
+          ...msg.toolCalls.map(tc => ({
+            type: "tool-call" as const,
+            toolCallId: tc.id,
+            toolName: tc.name,
+            input: JSON.parse(tc.argumentsJson)
+          }))
+        ];
+        return { role: "assistant", content };
+      }
+      case "tool":
+        return {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: msg.toolCallId,
+              toolName: msg.toolName,
+              output: msg.isError
+                ? { type: "error-text" as const, value: msg.content }
+                : { type: "text" as const, value: msg.content }
+            }
+          ]
+        };
+    }
+  });
+}
 
-  if (modelClient.streamAssistantMessage !== undefined && onTextDelta !== undefined) {
-    return modelClient.streamAssistantMessage(completionRequest, { onTextDelta });
+function toSdkTools(tools: readonly ToolDefinition[]): ToolSet {
+  const result: ToolSet = {};
+
+  for (const t of tools) {
+    result[t.name] = {
+      description: t.description,
+      inputSchema: jsonSchema(t.inputSchema),
+      execute: async (args: Record<string, unknown>) => {
+        const toolResult = await t.execute(args, { workspaceRoot: "" });
+        return toolResult.content;
+      }
+    };
   }
 
-  return modelClient.createAssistantMessage(completionRequest);
+  return result;
 }

@@ -7,7 +7,7 @@
 declare const BANKA_CODE_VERSION: string;
 
 import { runAgentLoop } from "./agent/run-agent-loop.ts";
-import { createModelClient } from "./models/create-model-client.ts";
+import { createLanguageModel } from "./models/create-model-client.ts";
 import { DEFAULT_SYSTEM_PROMPT } from "./prompt/system-prompt.ts";
 import { loadRuntimeConfig } from "./runtime/runtime-config.ts";
 import { createTools } from "./tools/create-tools.ts";
@@ -32,14 +32,14 @@ if (argv.includes("--help") || argv.includes("-h")) {
 
 选项:
   -h, --help         显示帮助
-  -v, --version      显示版本`);
+  -v, --version 显示版本号`);
   process.exit(0);
 }
 
 const prompt = argv.join(" ").trim();
 
 const runtimeConfig = loadRuntimeConfig(process.cwd());
-const modelClient = createModelClient(runtimeConfig);
+const languageModel = createLanguageModel(runtimeConfig);
 const toolRegistry = new ToolRegistry(createTools());
 
 try {
@@ -47,7 +47,7 @@ try {
     await runTui({
       systemPrompt: DEFAULT_SYSTEM_PROMPT,
       runtimeConfig,
-      modelClient,
+      languageModel,
       toolRegistry,
       toolContext: {
         workspaceRoot: runtimeConfig.workspaceRoot
@@ -58,7 +58,7 @@ try {
     const result = await runAgentLoop({
       systemPrompt: DEFAULT_SYSTEM_PROMPT,
       initialUserPrompt: prompt,
-      modelClient,
+      languageModel,
       toolRegistry,
       toolContext: {
         workspaceRoot: runtimeConfig.workspaceRoot
