@@ -12,6 +12,7 @@ import { ToolRegistry } from "../tools/tool-registry.ts";
 type StreamPart =
   | { type: "text-delta"; text: string }
   | { type: "tool-call"; toolCallId: string; toolName: string; input: Record<string, string> }
+  | { type: "error"; error: unknown }
   | { type: "finish-step" }
   | { type: "finish" };
 
@@ -181,6 +182,23 @@ describe("runAgentLoop", () => {
 
     expect(deltas).toEqual(["Hello", " ", "world"]);
     expect(result.finalText).toBe("Hello world");
+  });
+
+  it("throws when the stream emits an error part", async () => {
+    fakeStreamText.mockImplementationOnce(() => makeStreamResult([
+      { type: "error", error: new Error("boom") }
+    ]));
+
+    const registry = new ToolRegistry([createEchoTool()]);
+
+    await expect(runAgentLoop({
+      systemPrompt: "test",
+      initialUserPrompt: "greet",
+      languageModel: {} as never,
+      toolRegistry: registry,
+      toolContext: { workspaceRoot: "/tmp/banka" },
+      maxIterations: 2
+    })).rejects.toThrow("boom");
   });
 });
 

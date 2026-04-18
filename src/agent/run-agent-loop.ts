@@ -20,9 +20,6 @@ export interface ToolCallObserver {
   (toolCall: ToolCall): void;
 }
 
-/**
- * 文本增量观察器。
- */
 export interface TextDeltaObserver {
   (delta: string): void;
 }
@@ -84,6 +81,8 @@ export async function runAgentLoop(options: AgentRunOptions): Promise<AgentRunRe
           accumulatedText += part.text;
           options.onTextDelta?.(part.text);
           break;
+        case "error":
+          throw new ModelResponseError(String(part.error));
         case "tool-call":
           collectedToolCalls.push({
             toolCallId: part.toolCallId,
@@ -171,11 +170,7 @@ function toSdkTools(tools: readonly ToolDefinition[]): ToolSet {
   for (const t of tools) {
     result[t.name] = {
       description: t.description,
-      inputSchema: jsonSchema(t.inputSchema),
-      execute: async (args: Record<string, unknown>) => {
-        const toolResult = await t.execute(args, { workspaceRoot: "" });
-        return toolResult.content;
-      }
+      inputSchema: jsonSchema(t.inputSchema)
     };
   }
 

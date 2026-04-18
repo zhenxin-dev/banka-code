@@ -39,7 +39,7 @@ interface UiEntry {
   readonly id: string;
   readonly kind: "user" | "assistant" | "tool" | "error" | "status";
   readonly title: string;
-  body: string;
+  readonly body: string;
 }
 
 export interface TuiAppProps {
@@ -112,13 +112,11 @@ export function TuiApp(props: TuiAppProps) {
           appendEntry(setEntries, createEntry("tool", "tool", formatToolCallEntry(toolCall)));
         },
         onTextDelta(delta) {
-          streamingEntry.body += delta;
-          setEntries((prev) => [...prev]);
+          updateEntryBody(setEntries, streamingEntry.id, (body) => body + delta);
         }
       });
 
-      streamingEntry.body = result.finalText || "（空回复）";
-      setEntries((prev) => [...prev]);
+      updateEntryBody(setEntries, streamingEntry.id, () => result.finalText || "（空回复）");
 
       setPreviousMessages(result.transcript);
       appendEntry(
@@ -126,7 +124,7 @@ export function TuiApp(props: TuiAppProps) {
         createEntry("status", "status", `✓ ${result.iterations} 轮`)
       );
     } catch (error) {
-        appendEntry(setEntries, createEntry("error", "error", toErrorMessage(error)));
+      appendEntry(setEntries, createEntry("error", "error", toErrorMessage(error)));
     } finally {
       setBusy(false);
       inputRef?.focus();
@@ -433,6 +431,18 @@ function appendEntry(
   entry: UiEntry
 ): void {
   setEntries((previous) => [...previous, entry]);
+}
+
+function updateEntryBody(
+  setEntries: (setter: (previous: readonly UiEntry[]) => readonly UiEntry[]) => void,
+  entryId: string,
+  updateBody: (body: string) => string
+): void {
+  setEntries((previous) => previous.map((entry) =>
+    entry.id === entryId
+      ? { ...entry, body: updateBody(entry.body) }
+      : entry
+  ));
 }
 
 function toErrorMessage(error: unknown): string {
