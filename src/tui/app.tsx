@@ -249,22 +249,15 @@ function toToolDisplayName(toolName: string): string {
       return "Write";
     case "Edit":
       return "Edit";
-    case "glob":
+    case "Glob":
       return "Glob";
-    case "grep":
+    case "Grep":
       return "Grep";
-    case "todo":
-    case "todowrite":
-      return "Todo";
-    case "task":
-      return "Task";
-    case "fetch":
-    case "webfetch":
-      return "Fetch";
-    case "search":
-    case "web_search":
-    case "websearch":
-      return "Search";
+    // TODO: 待实现工具 — 命名统一 PascalCase
+    // case "Todo": return "Todo";
+    // case "Task": return "Task";
+    // case "Fetch": return "Fetch";
+    // case "Search": return "Search";
     default:
       return toTitleCase(toolName.replaceAll("_", " "));
   }
@@ -280,9 +273,9 @@ function summarizeToolArguments(toolName: string, argumentsJson: string): string
     case "Write":
     case "Edit":
       return readTrimmedString(args, "path", 72);
-    case "glob":
+    case "Glob":
       return readTrimmedString(args, "pattern", 72);
-    case "grep": {
+    case "Grep": {
       const pattern = readTrimmedString(args, "pattern", 44);
       const include = readTrimmedString(args, "include", 24);
       if (pattern !== "" && include !== "") {
@@ -290,13 +283,11 @@ function summarizeToolArguments(toolName: string, argumentsJson: string): string
       }
       return pattern || include;
     }
-    case "webfetch":
-      return readTrimmedString(args, "url", 72);
-    case "websearch":
-    case "web_search":
-      return readTrimmedString(args, "query", 72);
-    case "task":
-      return readTrimmedString(args, "description", 72) || readTrimmedString(args, "prompt", 72);
+    // TODO: 待实现工具 — 命名统一 PascalCase
+    // case "Todo": return readTrimmedString(args, "todos", 72);
+    // case "Task": return readTrimmedString(args, "description", 72) || readTrimmedString(args, "prompt", 72);
+    // case "Fetch": return readTrimmedString(args, "url", 72);
+    // case "Search": return readTrimmedString(args, "query", 72);
     default:
       return "";
   }
