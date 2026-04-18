@@ -5,7 +5,7 @@
  */
 
 import { streamText, type ToolSet, type LanguageModel } from "ai";
-import { ModelResponseError } from "../errors/banka-error.ts";
+import { ModelResponseError, OperationAbortedError } from "../errors/banka-error.ts";
 import type { ConversationMessage, ToolCall } from "../messages/message.ts";
 import { executeToolCall } from "../tools/execute-tool-call.ts";
 import type { ToolDefinition, ToolExecutionContext } from "../tools/tool.ts";
@@ -34,7 +34,7 @@ export interface AgentRunOptions {
   readonly languageModel: LanguageModel;
   readonly toolRegistry: ToolRegistry;
   readonly toolContext: ToolExecutionContext;
-  readonly maxIterations: number;
+  readonly abortSignal?: AbortSignal;
   readonly onToolCall?: ToolCallObserver;
   readonly onTextDelta?: TextDeltaObserver;
 }
@@ -52,6 +52,10 @@ export interface AgentRunResult {
  * 运行 banka 的主循环，直到模型停止请求工具。
  */
 export async function runAgentLoop(options: AgentRunOptions): Promise<AgentRunResult> {
+  if (options.abortSignal?.aborted ?? false) {
+    throw new OperationAbortedError("请求已中断");
+  }
+
   const messages: ConversationMessage[] = [
     ...(options.previousMessages ?? []),
     {
@@ -62,14 +66,17 @@ export async function runAgentLoop(options: AgentRunOptions): Promise<AgentRunRe
 
   const sdkTools = toSdkTools(options.toolRegistry.list());
 
-  for (let iteration = 0; iteration < options.maxIterations; iteration += 1) {
+  let iterations = 0;
+
+  while (true) {
     const coreMessages = toModelMessages(messages);
 
     const stream = streamText({
       model: options.languageModel,
       system: options.systemPrompt,
       messages: coreMessages,
-      tools: sdkTools
+      tools: sdkTools,
+      ...(options.abortSignal === undefined ? {} : { abortSignal: options.abortSignal })
     });
 
     let accumulatedText = "";
@@ -83,6 +90,8 @@ export async function runAgentLoop(options: AgentRunOptions): Promise<AgentRunRe
           break;
         case "error":
           throw new ModelResponseError(String(part.error));
+        case "abort":
+          throw new OperationAbortedError("请求已中断");
         case "tool-call": {
           const toolCall: ToolCall = {
             id: part.toolCallId,
@@ -100,8 +109,11 @@ export async function runAgentLoop(options: AgentRunOptions): Promise<AgentRunRe
       }
     }
 
-    const toolCallsFromSdk = collectedToolCalls.map(
-      (tc): ToolCall => ({
+    if (options.abortSignal?.aborted ?? false) {
+      throw new OperationAbortedError("请求已中断");
+    }
+
+    const toolCallsFromSdk = collectedToolCalls.map(      (tc): ToolCall => ({
         id: tc.toolCallId,
         name: tc.toolName,
         argumentsJson: JSON.stringify(tc.input)
@@ -116,23 +128,25 @@ export async function runAgentLoop(options: AgentRunOptions): Promise<AgentRunRe
 
     messages.push(assistantMessage);
 
+    iterations += 1;
+
     if (toolCallsFromSdk.length === 0) {
       return {
         finalText: accumulatedText,
         transcript: [...messages],
-        iterations: iteration + 1
+        iterations
       };
     }
 
     for (const toolCall of toolCallsFromSdk) {
+      if (options.abortSignal?.aborted ?? false) {
+        throw new OperationAbortedError("请求已中断");
+      }
+
       const toolResult = await executeToolCall(toolCall, options.toolRegistry, options.toolContext);
       messages.push(toolResult);
     }
   }
-
-  throw new ModelResponseError(
-    `Agent exceeded the maximum iteration limit (${options.maxIterations}).`
-  );
 }
 
 function toModelMessages(messages: readonly ConversationMessage[]): ModelMessage[] {

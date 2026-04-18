@@ -25,6 +25,11 @@ export class ConfigurationError extends BankaError {}
 export class ModelResponseError extends BankaError {}
 
 /**
+ * 主动中断当前请求。
+ */
+export class OperationAbortedError extends BankaError {}
+
+/**
  * 工具执行错误。
  */
 export class ToolExecutionError extends BankaError {}

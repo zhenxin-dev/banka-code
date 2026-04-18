@@ -13,6 +13,7 @@ type StreamPart =
   | { type: "text-delta"; text: string }
   | { type: "tool-call"; toolCallId: string; toolName: string; input: Record<string, string> }
   | { type: "error"; error: unknown }
+  | { type: "abort" }
   | { type: "finish-step" }
   | { type: "finish" };
 
@@ -77,7 +78,6 @@ describe("runAgentLoop", () => {
       languageModel: {} as never,
       toolRegistry: registry,
       toolContext: { workspaceRoot: "/tmp/banka" },
-      maxIterations: 4
     });
 
     expect(result.finalText).toBe("done");
@@ -119,8 +119,7 @@ describe("runAgentLoop", () => {
       ],
       languageModel: {} as never,
       toolRegistry: registry,
-      toolContext: { workspaceRoot: "/tmp/banka" },
-      maxIterations: 2
+      toolContext: { workspaceRoot: "/tmp/banka" }
     });
 
     expect(capturedRequests[0]?.messages).toEqual([
@@ -150,7 +149,6 @@ describe("runAgentLoop", () => {
       languageModel: {} as never,
       toolRegistry: registry,
       toolContext: { workspaceRoot: "/tmp/banka" },
-      maxIterations: 4,
       onToolCall(toolCall) {
         events.push({ type: "tool", value: `${toolCall.name}:${toolCall.id}` });
       },
@@ -182,7 +180,6 @@ describe("runAgentLoop", () => {
       languageModel: {} as never,
       toolRegistry: registry,
       toolContext: { workspaceRoot: "/tmp/banka" },
-      maxIterations: 2,
       onTextDelta(delta) {
         deltas.push(delta);
       }
@@ -204,9 +201,25 @@ describe("runAgentLoop", () => {
       initialUserPrompt: "greet",
       languageModel: {} as never,
       toolRegistry: registry,
-      toolContext: { workspaceRoot: "/tmp/banka" },
-      maxIterations: 2
+      toolContext: { workspaceRoot: "/tmp/banka" }
     })).rejects.toThrow("boom");
+  });
+
+  it("throws when the stream is aborted", async () => {
+    fakeStreamText.mockImplementationOnce(() => makeStreamResult([
+      textPart("partial"),
+      { type: "abort" }
+    ]));
+
+    const registry = new ToolRegistry([createEchoTool()]);
+
+    await expect(runAgentLoop({
+      systemPrompt: "test",
+      initialUserPrompt: "greet",
+      languageModel: {} as never,
+      toolRegistry: registry,
+      toolContext: { workspaceRoot: "/tmp/banka" }
+    })).rejects.toThrow("请求已中断");
   });
 });
 

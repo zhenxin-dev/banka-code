@@ -20,7 +20,6 @@ export interface TuiRunOptions {
   readonly languageModel: LanguageModel;
   readonly toolRegistry: ToolRegistry;
   readonly toolContext: ToolExecutionContext;
-  readonly maxIterations: number;
 }
 
 /**
@@ -35,7 +34,6 @@ export async function runTui(options: TuiRunOptions): Promise<void> {
         languageModel={options.languageModel}
         toolRegistry={options.toolRegistry}
         toolContext={options.toolContext}
-        maxIterations={options.maxIterations}
       />
     ),
     {

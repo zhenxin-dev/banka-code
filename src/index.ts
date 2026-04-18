@@ -51,8 +51,7 @@ try {
       toolRegistry,
       toolContext: {
         workspaceRoot: runtimeConfig.workspaceRoot
-      },
-      maxIterations: 8
+      }
     });
   } else {
     const result = await runAgentLoop({
@@ -62,8 +61,7 @@ try {
       toolRegistry,
       toolContext: {
         workspaceRoot: runtimeConfig.workspaceRoot
-      },
-      maxIterations: 8
+      }
     });
 
     console.log(result.finalText);
