@@ -4,14 +4,15 @@
 
 **Banka Code** 是一个基于 TypeScript + [Bun](https://bun.sh) 构建的 Coding Agent，配备千恋万花风格的 TUI 终端界面。
 
-名字来源于 [千恋＊万花](https://www.yuzu-soft.com/products/senren/)（Senren\*Banka）——柚子社十周年纪念作。在这座名为「穗织」的温泉小镇里，banka 等待你的指令，然后斩断一切繁琐的编码工作。
+名字来源于 [千恋＊万花](https://www.yuzu-soft.com/products/senren/)（Senren\*Banka）——柚子社十周年纪念作。在这座名为「穗织」的温泉小镇里，万花等待你的指令，然后斩断一切繁琐的编码工作。
 
 ## ✨ 特性
 
 - **TypeScript + Bun** — 类型安全与极致性能
 - **Coding Agent** — 理解意图、编辑代码、执行命令，一站式完成
 - **千恋万花 TUI** — 樱粉暖橘配色、花弁流灯动画、透明终端适配
-- **多 Provider 支持** — OpenAI 兼容 / Anthropic 兼容 / Ollama / Mock
+- **流式输出** — SSE 实时推送，工具调用过程全程可见
+- **多 Provider 支持** — OpenAI / Anthropic / Ollama
 
 ## 📦 快速开始
 
@@ -22,33 +23,38 @@ bun install
 # 配置环境变量
 cp .env.example .env
 
-# 启动 TUI（未配置 API 时默认使用 mock provider）
+# 启动 TUI
 bun run src/index.ts
 
 # 单次执行模式
 bun run src/index.ts "帮我看看当前项目结构"
 ```
 
-### TUI 用法
-
-- 直接运行 `bun run src/index.ts` 进入 TUI 终端界面
-- 输入消息后回车发送
-- 输入 `/exit` 或 `/quit` 退出
-
 ### 环境变量
 
 使用 Bun 原生 `.env`，无需额外安装 `dotenv`。
 
-#### OpenAI 兼容
+#### OpenAI
 
 ```bash
-BANKA_PROVIDER=openai-compatible
+BANKA_PROVIDER=openai
 BANKA_API_KEY=your-api-key
 BANKA_BASE_URL=https://api.example.com/v1
 BANKA_MODEL=your-model-id
 ```
 
-banka 会向 `${BANKA_BASE_URL}/chat/completions` 发起请求。
+banka 会向 `${BANKA_BASE_URL}/chat/completions` 发起请求，支持 SSE 流式输出。
+
+#### Anthropic
+
+```bash
+BANKA_PROVIDER=anthropic
+BANKA_API_KEY=your-api-key
+BANKA_BASE_URL=https://api.example.com/anthropic/v1
+BANKA_MODEL=your-model-id
+```
+
+banka 会向 `${BANKA_BASE_URL}/messages` 发起请求，支持 SSE 流式输出。
 
 #### Ollama（本地）
 
@@ -58,20 +64,7 @@ BANKA_BASE_URL=127.0.0.1:11434
 BANKA_MODEL=qwen3.5:9b
 ```
 
-`BANKA_API_KEY` 可以省略。banka 会自动补全为 Ollama 的 OpenAI 兼容端点，向 `http://127.0.0.1:11434/v1/chat/completions` 发起请求。
-
-#### Anthropic 兼容
-
-```bash
-BANKA_PROVIDER=anthropic-compatible
-BANKA_API_KEY=your-api-key
-BANKA_BASE_URL=https://api.example.com/anthropic/v1
-BANKA_MODEL=your-anthropic-compatible-model
-```
-
-banka 会向 `${BANKA_BASE_URL}/messages` 发起请求。
-
-如果 `.env` 不存在，banka 会自动回退到 `mock provider`。
+`BANKA_API_KEY` 可以省略。banka 会自动补全为 Ollama 的端点，向 `http://127.0.0.1:11434/v1/chat/completions` 发起请求。
 
 ### 可用脚本
 
@@ -98,11 +91,11 @@ bun test         # 运行测试
 ```
 banka-code/
 ├── src/
-│   ├── agent/          # agent 主循环
+│   ├── agent/          # agent 主循环（流式 + 多轮对话）
 │   ├── errors/         # 自定义错误类型
 │   ├── messages/       # 会话消息模型
-│   ├── models/         # provider 抽象与模型客户端
-│   ├── prompt/         # 系统提示词
+│   ├── models/         # OpenAI / Anthropic / Ollama 客户端
+│   ├── prompt/         # 系统提示词（万花角色设定）
 │   ├── runtime/        # 运行时配置
 │   ├── shared/         # 共享工具函数
 │   ├── tools/          # Bash / Read / Write / Edit / Glob / Grep
@@ -111,7 +104,7 @@ banka-code/
 ├── package.json
 ├── tsconfig.json
 ├── .env.example
-├── AGENTS.md           # AI Agent 开发指南
+├── AGENTS.md
 └── README.md
 ```
 

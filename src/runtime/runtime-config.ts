@@ -7,7 +7,7 @@
 /**
  * 可用的 provider 类型。
  */
-export type ProviderKind = "mock" | "openai-compatible" | "anthropic-compatible" | "ollama";
+export type ProviderKind = "openai" | "anthropic" | "ollama";
 
 /**
  * Banka Code 运行时配置。
@@ -30,11 +30,7 @@ export function loadRuntimeConfig(workspaceRoot: string): RuntimeConfig {
   const model = Bun.env.BANKA_MODEL?.trim();
 
   if (isIncompleteApiConfig(provider, apiKey, baseUrl)) {
-    return {
-      workspaceRoot,
-      provider: "mock",
-      model: "bankacode-mock"
-    };
+    throw new Error("缺少 API 配置。请设置 BANKA_API_KEY、BANKA_BASE_URL 和 BANKA_MODEL 环境变量。");
   }
 
   if (model === undefined || model === "") {
@@ -52,17 +48,16 @@ export function loadRuntimeConfig(workspaceRoot: string): RuntimeConfig {
 
 function parseProviderKind(value: string | undefined): ProviderKind {
   if (value === undefined || value === "") {
-    return "openai-compatible";
+    return "openai";
   }
 
   switch (value) {
-    case "mock":
-    case "openai-compatible":
-    case "anthropic-compatible":
+    case "openai":
+    case "anthropic":
     case "ollama":
       return value;
     default:
-      return "openai-compatible";
+      return "openai";
   }
 }
 

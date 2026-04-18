@@ -19,6 +19,13 @@ export interface ToolCallObserver {
 }
 
 /**
+ * 文本增量观察器。
+ */
+export interface TextDeltaObserver {
+  (text: string): void;
+}
+
+/**
  * Agent 执行参数。
  */
 export interface AgentRunOptions {
@@ -30,6 +37,7 @@ export interface AgentRunOptions {
   readonly toolContext: ToolExecutionContext;
   readonly maxIterations: number;
   readonly onToolCall?: ToolCallObserver;
+  readonly onTextDelta?: TextDeltaObserver;
 }
 
 /**
@@ -54,11 +62,17 @@ export async function runAgentLoop(options: AgentRunOptions): Promise<AgentRunRe
   ];
 
   for (let iteration = 0; iteration < options.maxIterations; iteration += 1) {
-    const assistantMessage = await options.modelClient.createAssistantMessage({
+    const completionRequest = {
       systemPrompt: options.systemPrompt,
       messages,
       tools: options.toolRegistry.list()
-    });
+    };
+
+    const assistantMessage = await fetchAssistantMessage(
+      options.modelClient,
+      completionRequest,
+      options.onTextDelta
+    );
 
     messages.push(assistantMessage);
 
@@ -80,4 +94,22 @@ export async function runAgentLoop(options: AgentRunOptions): Promise<AgentRunRe
   throw new ModelResponseError(
     `Agent exceeded the maximum iteration limit (${options.maxIterations}).`
   );
+}
+
+function fetchAssistantMessage(
+  modelClient: ModelClient,
+  request: { systemPrompt: string; messages: readonly ConversationMessage[]; tools: readonly import("../tools/tool.ts").ToolDefinition[] },
+  onTextDelta?: TextDeltaObserver
+): Promise<import("../messages/message.ts").AssistantMessage> {
+  const completionRequest = {
+    systemPrompt: request.systemPrompt,
+    messages: request.messages,
+    tools: request.tools
+  };
+
+  if (modelClient.streamAssistantMessage !== undefined && onTextDelta !== undefined) {
+    return modelClient.streamAssistantMessage(completionRequest, { onTextDelta });
+  }
+
+  return modelClient.createAssistantMessage(completionRequest);
 }

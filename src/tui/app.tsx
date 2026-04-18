@@ -219,14 +219,12 @@ function formatRuntimeBadge(runtimeConfig: RuntimeConfig): string {
 
 function toProviderLabel(provider: RuntimeConfig["provider"]): string {
   switch (provider) {
-    case "openai-compatible":
-      return "OpenAI Compatible";
-    case "anthropic-compatible":
-      return "Anthropic Compatible";
+    case "openai":
+      return "OpenAI";
+    case "anthropic":
+      return "Anthropic";
     case "ollama":
       return "Ollama";
-    case "mock":
-      return "Mock";
   }
 }
 

@@ -8,23 +8,18 @@ import { ConfigurationError } from "../errors/banka-error.ts";
 import type { RuntimeConfig } from "../runtime/runtime-config.ts";
 import type { ModelClient } from "./model-client.ts";
 import {
-  AnthropicCompatibleModelClient,
+  AnthropicModelClient,
   getDefaultAnthropicTimeoutMs
-} from "./anthropic-compatible-model-client.ts";
-import { MockModelClient } from "./mock-model-client.ts";
+} from "./anthropic-model-client.ts";
 import {
   getDefaultOpenAITimeoutMs,
-  OpenAICompatibleModelClient
-} from "./openai-compatible-model-client.ts";
+  OpenAIModelClient
+} from "./openai-model-client.ts";
 
 /**
  * 根据运行时配置创建模型客户端。
  */
 export function createModelClient(config: RuntimeConfig): ModelClient {
-  if (config.provider === "mock") {
-    return new MockModelClient();
-  }
-
   const baseUrl = config.baseUrl;
 
   if (baseUrl === undefined) {
@@ -37,8 +32,8 @@ export function createModelClient(config: RuntimeConfig): ModelClient {
 
   const apiKey = config.apiKey ?? "ollama";
 
-  if (config.provider === "anthropic-compatible") {
-    return new AnthropicCompatibleModelClient({
+  if (config.provider === "anthropic") {
+    return new AnthropicModelClient({
       apiKey,
       baseUrl,
       model: config.model,
@@ -47,7 +42,7 @@ export function createModelClient(config: RuntimeConfig): ModelClient {
   }
 
   if (config.provider === "ollama") {
-    return new OpenAICompatibleModelClient({
+    return new OpenAIModelClient({
       apiKey: normalizeOllamaApiKey(config.apiKey),
       baseUrl: normalizeOllamaBaseUrl(baseUrl),
       model: config.model,
@@ -55,7 +50,7 @@ export function createModelClient(config: RuntimeConfig): ModelClient {
     });
   }
 
-  return new OpenAICompatibleModelClient({
+  return new OpenAIModelClient({
     apiKey,
     baseUrl,
     model: config.model,

@@ -1,5 +1,5 @@
 /**
- * Anthropic 兼容模型客户端。
+ * Anthropic 模型客户端。
  *
  * @author 真心
  */
@@ -14,9 +14,9 @@ const DEFAULT_ANTHROPIC_TIMEOUT_MS = 60_000;
 const ANTHROPIC_VERSION = "2023-06-01";
 
 /**
- * Anthropic 兼容网关配置。
+ * Anthropic 网关配置。
  */
-export interface AnthropicCompatibleClientConfig {
+export interface AnthropicClientConfig {
   readonly apiKey: string;
   readonly baseUrl: string;
   readonly model: string;
@@ -64,15 +64,15 @@ interface AnthropicMessagesRequest {
 }
 
 /**
- * 基于 fetch 的 Anthropic 兼容客户端。
+ * 基于 fetch 的 Anthropic 客户端。
  */
-export class AnthropicCompatibleModelClient implements ModelClient {
+export class AnthropicModelClient implements ModelClient {
   readonly #apiKey: string;
   readonly #baseUrl: string;
   readonly #model: string;
   readonly #timeoutMs: number;
 
-  public constructor(config: AnthropicCompatibleClientConfig) {
+  public constructor(config: AnthropicClientConfig) {
     this.#apiKey = config.apiKey;
     this.#baseUrl = trimTrailingSlash(config.baseUrl);
     this.#model = config.model;
@@ -80,7 +80,7 @@ export class AnthropicCompatibleModelClient implements ModelClient {
   }
 
   /**
-   * 调用远端 Anthropic 兼容网关生成助手消息。
+   * 调用远端 Anthropic 网关生成助手消息。
    */
   public async createAssistantMessage(
     request: ModelCompletionRequest
@@ -106,7 +106,7 @@ export class AnthropicCompatibleModelClient implements ModelClient {
 
     if (!response.ok) {
       throw new ModelResponseError(
-        `Anthropic-compatible request failed with ${response.status}: ${await response.text()}`
+        `Anthropic request failed with ${response.status}: ${await response.text()}`
       );
     }
 
@@ -209,13 +209,13 @@ function parseToolInput(toolCall: ToolCall): Record<string, unknown> {
 
 function parseAssistantMessage(rawBody: unknown): AssistantMessage {
   if (!isRecord(rawBody)) {
-    throw new ModelResponseError("Anthropic-compatible response body must be a JSON object.");
+    throw new ModelResponseError("Anthropic response body must be a JSON object.");
   }
 
   const rawContent = rawBody["content"];
 
   if (!Array.isArray(rawContent)) {
-    throw new ModelResponseError("Anthropic-compatible response body must include a content array.");
+    throw new ModelResponseError("Anthropic response body must include a content array.");
   }
 
   const textParts: string[] = [];
@@ -276,7 +276,7 @@ function trimTrailingSlash(value: string): string {
 }
 
 /**
- * 返回 anthropic-compatible 默认超时时间。
+ * 返回 anthropic 默认超时时间。
  */
 export function getDefaultAnthropicTimeoutMs(): number {
   return DEFAULT_ANTHROPIC_TIMEOUT_MS;

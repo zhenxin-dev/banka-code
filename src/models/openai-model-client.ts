@@ -1,5 +1,5 @@
 /**
- * OpenAI 兼容模型客户端。
+ * OpenAI 模型客户端。
  *
  * @author 真心
  */
@@ -11,9 +11,9 @@ import type { ToolDefinition } from "../tools/tool.ts";
 import type { ModelClient, ModelCompletionRequest } from "./model-client.ts";
 
 /**
- * OpenAI 兼容网关配置。
+ * OpenAI 网关配置。
  */
-export interface OpenAICompatibleClientConfig {
+export interface OpenAIClientConfig {
   readonly apiKey: string;
   readonly baseUrl: string;
   readonly model: string;
@@ -76,15 +76,15 @@ interface OpenAIChatCompletionRequest {
 }
 
 /**
- * 基于 fetch 的 OpenAI 兼容客户端。
+ * 基于 fetch 的 OpenAI 客户端。
  */
-export class OpenAICompatibleModelClient implements ModelClient {
+export class OpenAIModelClient implements ModelClient {
   readonly #apiKey: string;
   readonly #baseUrl: string;
   readonly #model: string;
   readonly #timeoutMs: number;
 
-  public constructor(config: OpenAICompatibleClientConfig) {
+  public constructor(config: OpenAIClientConfig) {
     this.#apiKey = config.apiKey;
     this.#baseUrl = trimTrailingSlash(config.baseUrl);
     this.#model = config.model;
@@ -116,7 +116,7 @@ export class OpenAICompatibleModelClient implements ModelClient {
 
     if (!response.ok) {
       throw new ModelResponseError(
-        `OpenAI-compatible request failed with ${response.status}: ${await response.text()}`
+        `OpenAI request failed with ${response.status}: ${await response.text()}`
       );
     }
 
@@ -202,13 +202,13 @@ function parseAssistantMessage(rawBody: unknown): AssistantMessage {
   const firstChoice = choices[0];
 
   if (firstChoice === undefined || !isRecord(firstChoice)) {
-    throw new ModelResponseError("OpenAI-compatible response did not include a valid first choice.");
+    throw new ModelResponseError("OpenAI response did not include a valid first choice.");
   }
 
   const rawMessage = firstChoice["message"];
 
   if (!isRecord(rawMessage)) {
-    throw new ModelResponseError("OpenAI-compatible response did not include a valid message object.");
+    throw new ModelResponseError("OpenAI response did not include a valid message object.");
   }
 
   const content = readAssistantContent(rawMessage);
@@ -223,13 +223,13 @@ function parseAssistantMessage(rawBody: unknown): AssistantMessage {
 
 function readChoices(rawBody: unknown): readonly unknown[] {
   if (!isRecord(rawBody)) {
-    throw new ModelResponseError("OpenAI-compatible response body must be a JSON object.");
+    throw new ModelResponseError("OpenAI response body must be a JSON object.");
   }
 
   const choices = rawBody["choices"];
 
   if (!Array.isArray(choices)) {
-    throw new ModelResponseError("OpenAI-compatible response body must include a choices array.");
+    throw new ModelResponseError("OpenAI response body must include a choices array.");
   }
 
   return choices;
@@ -298,7 +298,7 @@ function trimTrailingSlash(value: string): string {
 }
 
 /**
- * 返回 openai-compatible 默认超时时间。
+ * 返回 openai 默认超时时间。
  */
 export function getDefaultOpenAITimeoutMs(): number {
   return DEFAULT_OPENAI_TIMEOUT_MS;

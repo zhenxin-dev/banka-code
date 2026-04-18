@@ -1,13 +1,13 @@
 /**
- * Anthropic 兼容模型客户端测试。
+ * Anthropic 模型客户端测试。
  *
  * @author 真心
  */
 
 import { describe, expect, it } from "bun:test";
-import { AnthropicCompatibleModelClient } from "./anthropic-compatible-model-client.ts";
+import { AnthropicModelClient } from "./anthropic-model-client.ts";
 
-describe("AnthropicCompatibleModelClient", () => {
+describe("AnthropicModelClient", () => {
   it("parses text and tool_use blocks into assistant message", async () => {
     const originalFetch = globalThis.fetch;
     const fetchStub = Object.assign(
@@ -45,7 +45,7 @@ describe("AnthropicCompatibleModelClient", () => {
     globalThis.fetch = fetchStub;
 
     try {
-      const client = new AnthropicCompatibleModelClient({
+      const client = new AnthropicModelClient({
         apiKey: "test-key",
         baseUrl: "https://example.com/anthropic/v1",
         model: "MiniMax-M2.7",
