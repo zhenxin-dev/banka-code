@@ -31,7 +31,15 @@ import type { ConversationMessage, ToolCall } from "../messages/message.ts";
 import type { RuntimeConfig } from "../runtime/runtime-config.ts";
 import type { ToolExecutionContext } from "../tools/tool.ts";
 import { ToolRegistry } from "../tools/tool-registry.ts";
-import { findBuiltinCommands, getBuiltinCommands, parseBuiltinCommand, titledRule, toDisplayLines } from "./message-format.ts";
+import {
+  findBuiltinCommands,
+  getBuiltinCommands,
+  moveBuiltinCommandSelectionIndex,
+  normalizeBuiltinCommandSelectionIndex,
+  parseBuiltinCommand,
+  titledRule,
+  toDisplayLines
+} from "./message-format.ts";
 import { Logo } from "./logo.tsx";
 import { createMarkdownSyntaxStyle } from "./markdown-style.ts";
 import { Spinner } from "./spinner.tsx";
@@ -63,6 +71,8 @@ export function TuiApp(props: TuiAppProps) {
   const [previousMessages, setPreviousMessages] = createSignal<readonly ConversationMessage[]>([]);
   const [statusTick, setStatusTick] = createSignal(0);
   const [streamingEntryId, setStreamingEntryId] = createSignal<string | undefined>(undefined);
+  const [streamingBody, setStreamingBody] = createSignal("");
+  const [commandSelectionIndex, setCommandSelectionIndex] = createSignal(0);
   let inputRef: InputRenderable | undefined;
   let activeAbortController: AbortController | undefined;
   let pendingStreamText = "";
@@ -75,7 +85,12 @@ export function TuiApp(props: TuiAppProps) {
 
   const statusMarquee = createMemo(() => buildStatusMarquee(statusTick()));
   const commandSuggestions = createMemo(() => findBuiltinCommands(draft()));
-  const commandPanel = createMemo(() => buildCommandPanelState(draft(), commandSuggestions(), busy()));
+  const commandPanel = createMemo(() => buildCommandPanelState(
+    draft(),
+    commandSuggestions(),
+    busy(),
+    commandSelectionIndex()
+  ));
   let lastCopiedSelectionText = "";
 
   const statusInterval = setInterval(() => {
@@ -96,6 +111,11 @@ export function TuiApp(props: TuiAppProps) {
     const entryId = pendingStreamEntryId;
     const bufferedText = pendingStreamText;
     pendingStreamText = "";
+
+    if (entryId === streamingEntryId()) {
+      setStreamingBody((body) => body + bufferedText);
+      return;
+    }
 
     updateEntryBody(setEntries, entryId, (body) => body + bufferedText);
   };
@@ -139,13 +159,58 @@ export function TuiApp(props: TuiAppProps) {
   });
 
   useKeyboard((key) => {
-    if (key.name !== "escape" || !busy()) {
+    if (key.name === "escape" && busy()) {
+      key.preventDefault();
+      flushAndResetPendingStreamText();
+      activeAbortController?.abort();
       return;
     }
 
-    key.preventDefault();
-    flushAndResetPendingStreamText();
-    activeAbortController?.abort();
+    const panel = commandPanel();
+
+    if (busy() || panel === undefined) {
+      return;
+    }
+
+    switch (key.name) {
+      case "up":
+        if (panel.commands.length === 0) {
+          return;
+        }
+        key.preventDefault();
+        key.stopPropagation();
+        setCommandSelectionIndex(moveBuiltinCommandSelectionIndex(panel.selectedIndex, panel.commands.length, -1));
+        inputRef?.focus();
+        return;
+      case "down":
+        if (panel.commands.length === 0) {
+          return;
+        }
+        key.preventDefault();
+        key.stopPropagation();
+        setCommandSelectionIndex(moveBuiltinCommandSelectionIndex(panel.selectedIndex, panel.commands.length, 1));
+        inputRef?.focus();
+        return;
+      case "tab":
+        if (panel.selectedCommand === undefined) {
+          return;
+        }
+        key.preventDefault();
+        key.stopPropagation();
+        applyCommandDraft(inputRef, setDraft, setCommandSelectionIndex, panel.selectedCommand.command);
+        return;
+      case "return":
+      case "enter":
+        if (panel.selectedCommand === undefined) {
+          return;
+        }
+        key.preventDefault();
+        key.stopPropagation();
+        void submitPrompt(panel.selectedCommand.command);
+        return;
+      default:
+        return;
+    }
   });
 
   useSelectionHandler((selection) => {
@@ -199,6 +264,7 @@ export function TuiApp(props: TuiAppProps) {
         clearSession() {
           setEntries([]);
           setPreviousMessages([]);
+          setStreamingBody("");
           setStreamingEntryId(undefined);
         }
       });
@@ -214,6 +280,7 @@ export function TuiApp(props: TuiAppProps) {
 
     const streamingEntry = createEntry("assistant", "Banka Code", "");
     let currentStreamingId = streamingEntry.id;
+    setStreamingBody("");
     setStreamingEntryId(currentStreamingId);
     appendEntry(setEntries, streamingEntry);
 
@@ -229,10 +296,16 @@ export function TuiApp(props: TuiAppProps) {
         onToolCall(toolCall) {
           flushAndResetPendingStreamText();
           const currentId = currentStreamingId;
+          const currentBody = streamingBody();
+
+          if (currentBody !== "") {
+            updateEntryBody(setEntries, currentId, () => currentBody);
+          }
+
           setEntries((prev) => {
             const current = prev.find((e) => e.id === currentId);
             // 无文本时替换为 tool entry，有文本时保留并追加
-            if (current !== undefined && current.body === "") {
+            if (current !== undefined && current.body === "" && currentBody === "") {
               return [...prev.filter((e) => e.id !== currentId), createEntry("tool", "tool", formatToolCallEntry(toolCall))];
             }
             return [...prev, createEntry("tool", "tool", formatToolCallEntry(toolCall))];
@@ -240,6 +313,7 @@ export function TuiApp(props: TuiAppProps) {
 
           const nextEntry = createEntry("assistant", "Banka Code", "");
           currentStreamingId = nextEntry.id;
+          setStreamingBody("");
           setStreamingEntryId(currentStreamingId);
           appendEntry(setEntries, nextEntry);
         },
@@ -251,13 +325,14 @@ export function TuiApp(props: TuiAppProps) {
       // 最终更新 last streaming entry：写入 finalText 或移除空白
       flushAndResetPendingStreamText();
       const lastId = currentStreamingId;
+      const finalBody = result.finalText !== "" ? result.finalText : streamingBody();
       setEntries((prev) => {
         const last = prev.find((e) => e.id === lastId);
         if (last === undefined) {
           return prev;
         }
-        if (result.finalText !== "") {
-          return prev.map((e) => e.id === lastId ? { ...e, body: result.finalText } : e);
+        if (finalBody !== "") {
+          return prev.map((e) => e.id === lastId ? { ...e, body: finalBody } : e);
         }
         if (last.body === "") {
           return prev.filter((e) => e.id !== lastId);
@@ -272,11 +347,17 @@ export function TuiApp(props: TuiAppProps) {
       );
     } catch (error) {
       flushAndResetPendingStreamText();
+      const currentId = currentStreamingId;
+      const partialBody = streamingBody();
+      if (partialBody !== "") {
+        updateEntryBody(setEntries, currentId, () => partialBody);
+      }
       if (!(error instanceof OperationAbortedError)) {
         appendEntry(setEntries, createEntry("error", "error", toErrorMessage(error)));
       }
     } finally {
       flushAndResetPendingStreamText();
+      setStreamingBody("");
       if (activeAbortController === abortController) {
         activeAbortController = undefined;
       }
@@ -300,7 +381,7 @@ export function TuiApp(props: TuiAppProps) {
       {/* ── Message List (Scrollable) ── */}
       <scrollbox flexGrow={1} scrollY stickyScroll stickyStart="bottom" paddingRight={1}>
         <For each={entries()}>
-          {(entry) => renderEntry(entry, t, markdownStyle, streamingEntryId())}
+          {(entry) => renderEntry(entry, t, markdownStyle, streamingEntryId, streamingBody)}
         </For>
 
       </scrollbox>
@@ -327,14 +408,14 @@ export function TuiApp(props: TuiAppProps) {
                     <box flexDirection="row" gap={1}>
                       <box width={12} flexShrink={0}>
                         <text
-                          fg={index() === 0 ? t.brandShimmer : t.text}
-                          attributes={index() === 0 ? TextAttributes.BOLD : TextAttributes.NONE}
+                          fg={index() === commandPanel()!.selectedIndex ? t.brandShimmer : t.text}
+                          attributes={index() === commandPanel()!.selectedIndex ? TextAttributes.BOLD : TextAttributes.NONE}
                         >
-                          {`${index() === 0 ? "›" : " "} ${command.command}`}
+                          {`${index() === commandPanel()!.selectedIndex ? "›" : " "} ${command.command}`}
                         </text>
                       </box>
                       <box flexGrow={1} flexShrink={1} minWidth={0}>
-                        <text fg={index() === 0 ? t.brandShimmer : t.hintText}>{command.description}</text>
+                        <text fg={index() === commandPanel()!.selectedIndex ? t.brandShimmer : t.hintText}>{command.description}</text>
                       </box>
                     </box>
                   )}
@@ -372,7 +453,10 @@ export function TuiApp(props: TuiAppProps) {
             value={draft()}
             flexGrow={1}
             placeholder={busy() ? "等待中…" : "给 Banka Code 发消息…"}
-            onInput={setDraft}
+            onInput={(value) => {
+              setDraft(value);
+              setCommandSelectionIndex(0);
+            }}
             onSubmit={() => {
               void submitPrompt(inputRef?.plainText ?? draft());
             }}
@@ -431,6 +515,21 @@ function clearDraft(
   setDraft("");
 }
 
+function applyCommandDraft(
+  input: InputRenderable | undefined,
+  setDraft: (value: string) => void,
+  setCommandSelectionIndex: (value: number) => void,
+  command: string
+): void {
+  if (input !== undefined) {
+    input.value = command;
+    input.focus();
+  }
+
+  setDraft(command);
+  setCommandSelectionIndex(0);
+}
+
 function writeClipboardText(text: string): void {
   const encoded = Buffer.from(text, "utf8").toString("base64");
   process.stdout.write(`\u001B]52;c;${encoded}\u0007`);
@@ -457,12 +556,15 @@ function handleBuiltinCommand(options: BuiltinCommandHandlerOptions): void {
 interface CommandPanelState {
   readonly commands: readonly { readonly command: string; readonly description: string }[];
   readonly hasMore: boolean;
+  readonly selectedIndex: number;
+  readonly selectedCommand: { readonly command: string; readonly description: string } | undefined;
 }
 
 function buildCommandPanelState(
   draft: string,
   commands: readonly { readonly command: string; readonly description: string }[],
-  busy: boolean
+  busy: boolean,
+  selectedIndex: number
 ): CommandPanelState | undefined {
   const prompt = draft.trim();
 
@@ -471,10 +573,13 @@ function buildCommandPanelState(
   }
 
   const visibleCommands = commands.slice(0, 6);
+  const normalizedSelectedIndex = normalizeBuiltinCommandSelectionIndex(selectedIndex, visibleCommands.length);
 
   return {
     commands: visibleCommands,
-    hasMore: commands.length > visibleCommands.length
+    hasMore: commands.length > visibleCommands.length,
+    selectedIndex: normalizedSelectedIndex,
+    selectedCommand: visibleCommands[normalizedSelectedIndex]
   };
 }
 
@@ -629,7 +734,8 @@ function renderEntry(
   entry: UiEntry,
   t: ReturnType<typeof getTheme>,
   mdStyle: SyntaxStyle,
-  currentStreamingId: string | undefined
+  currentStreamingId: () => string | undefined,
+  currentStreamingBody: () => string
 ) {
   switch (entry.kind) {
     case "user":
@@ -645,37 +751,36 @@ function renderEntry(
       );
 
     case "assistant":
-      if (entry.body === "") {
-        return null;
-      }
       return (
-        <box width="100%" flexDirection="row" marginTop={1} marginBottom={0} paddingLeft={2}>
-          <box width={2} flexShrink={0}>
-            <text fg={t.brandShimmer}>❀ </text>
+        <Show when={entry.id === currentStreamingId() ? currentStreamingBody() !== "" : entry.body !== ""}>
+          <box width="100%" flexDirection="row" marginTop={1} marginBottom={0} paddingLeft={2}>
+            <box width={2} flexShrink={0}>
+              <text fg={t.brandShimmer}>❀ </text>
+            </box>
+            <box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0} paddingRight={1}>
+              <markdown
+                content={entry.id === currentStreamingId() ? currentStreamingBody() : entry.body}
+                syntaxStyle={mdStyle}
+                fg={t.assistantBody}
+                conceal={entry.id !== currentStreamingId()}
+                streaming={entry.id === currentStreamingId()}
+                width="100%"
+                flexShrink={1}
+                tableOptions={{
+                  widthMode: "content",
+                  columnFitter: "balanced",
+                  wrapMode: "word",
+                  cellPadding: 1,
+                  borders: true,
+                  outerBorder: true,
+                  borderStyle: "single",
+                  borderColor: t.divider,
+                  selectable: true
+                }}
+              />
+            </box>
           </box>
-          <box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0} paddingRight={1}>
-            <markdown
-              content={entry.body}
-              syntaxStyle={mdStyle}
-              fg={t.assistantBody}
-              conceal={true}
-              streaming={entry.id === currentStreamingId}
-              width="100%"
-              flexShrink={1}
-              tableOptions={{
-                widthMode: "content",
-                columnFitter: "balanced",
-                wrapMode: "word",
-                cellPadding: 1,
-                borders: true,
-                outerBorder: true,
-                borderStyle: "single",
-                borderColor: t.divider,
-                selectable: true
-              }}
-            />
-          </box>
-        </box>
+        </Show>
       );
 
     case "tool":

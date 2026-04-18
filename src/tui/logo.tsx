@@ -56,14 +56,19 @@ function charColorAt(i: number, tick: number): string {
 
 export interface LogoProps {
   readonly variant?: "compact" | "splash";
+  readonly paused?: boolean;
 }
 
-export function Logo(_props: LogoProps): JSX.Element {
+export function Logo(props: LogoProps): JSX.Element {
   const t = getTheme();
   const [tick, setTick] = createSignal(0);
   const [hitokoto, setHitokoto] = createSignal<Hitokoto | null>(null);
 
-  const interval = setInterval(() => setTick((v) => v + 1), FRAME_MS);
+  const interval = setInterval(() => {
+    if (!props.paused) {
+      setTick((v) => v + 1);
+    }
+  }, FRAME_MS);
   onCleanup(() => clearInterval(interval));
 
   onMount(() => {

@@ -5,7 +5,16 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { findBuiltinCommands, getBuiltinCommands, isExitCommand, parseBuiltinCommand, titledRule, toDisplayLines } from "./message-format.ts";
+import {
+  findBuiltinCommands,
+  getBuiltinCommands,
+  isExitCommand,
+  moveBuiltinCommandSelectionIndex,
+  normalizeBuiltinCommandSelectionIndex,
+  parseBuiltinCommand,
+  titledRule,
+  toDisplayLines
+} from "./message-format.ts";
 
 describe("tui message format", () => {
   it("recognizes exit commands", () => {
@@ -42,6 +51,20 @@ describe("tui message format", () => {
       { name: "status", command: "/status", description: "查看当前会话状态" }
     ]);
     expect(findBuiltinCommands("hello")).toEqual([]);
+  });
+
+  it("normalizes command selection index", () => {
+    expect(normalizeBuiltinCommandSelectionIndex(-1, 5)).toBe(0);
+    expect(normalizeBuiltinCommandSelectionIndex(99, 3)).toBe(2);
+    expect(normalizeBuiltinCommandSelectionIndex(1, 3)).toBe(1);
+    expect(normalizeBuiltinCommandSelectionIndex(1, 0)).toBe(0);
+  });
+
+  it("moves command selection index cyclically", () => {
+    expect(moveBuiltinCommandSelectionIndex(0, 3, -1)).toBe(2);
+    expect(moveBuiltinCommandSelectionIndex(2, 3, 1)).toBe(0);
+    expect(moveBuiltinCommandSelectionIndex(1, 3, 1)).toBe(2);
+    expect(moveBuiltinCommandSelectionIndex(0, 0, 1)).toBe(0);
   });
 
   it("splits content into display lines", () => {

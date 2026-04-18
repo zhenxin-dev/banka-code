@@ -84,6 +84,33 @@ export function findBuiltinCommands(value: string): readonly BuiltinCommandDefin
 }
 
 /**
+ * 将命令列表选中索引收敛到有效范围。
+ */
+export function normalizeBuiltinCommandSelectionIndex(index: number, commandCount: number): number {
+  if (!Number.isFinite(index) || commandCount <= 0) {
+    return 0;
+  }
+
+  return Math.max(0, Math.min(Math.trunc(index), commandCount - 1));
+}
+
+/**
+ * 按方向循环移动命令列表选中索引。
+ */
+export function moveBuiltinCommandSelectionIndex(
+  currentIndex: number,
+  commandCount: number,
+  direction: -1 | 1
+): number {
+  if (commandCount <= 0) {
+    return 0;
+  }
+
+  const normalizedIndex = normalizeBuiltinCommandSelectionIndex(currentIndex, commandCount);
+  return (normalizedIndex + direction + commandCount) % commandCount;
+}
+
+/**
  * 判断一条输入是否为退出命令。
  */
 export function isExitCommand(value: string): boolean {
