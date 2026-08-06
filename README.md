@@ -152,9 +152,9 @@ Bash 与 MCP 子进程不会继承 `BANKA_*` 模型配置和 API Key。MCP 配�
 技能从以下目录递归发现，项目技能覆盖同名全局技能：
 
 ```text
-~/.codex/skills/**/SKILL.md
+~/.banka/skills/**/SKILL.md
 ~/.agents/skills/**/SKILL.md
-<project>/.codex/skills/**/SKILL.md
+<project>/.banka/skills/**/SKILL.md
 <project>/.agents/skills/**/SKILL.md
 ```
 

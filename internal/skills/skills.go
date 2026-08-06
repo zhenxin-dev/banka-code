@@ -28,12 +28,12 @@ func Discover(projectRoot string, homeDir string) (Catalog, error) {
 	roots := []string{}
 	if homeDir != "" {
 		roots = append(roots,
-			filepath.Join(homeDir, ".codex", "skills"),
+			filepath.Join(homeDir, ".banka", "skills"),
 			filepath.Join(homeDir, ".agents", "skills"),
 		)
 	}
 	roots = append(roots,
-		filepath.Join(projectRoot, ".codex", "skills"),
+		filepath.Join(projectRoot, ".banka", "skills"),
 		filepath.Join(projectRoot, ".agents", "skills"),
 	)
 

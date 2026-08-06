@@ -26,6 +26,27 @@ func TestDiscoverAppliesProjectSkillOverride(t *testing.T) {
 	}
 }
 
+func TestDiscoverUsesBankaAndAgentsRootsButIgnoresCodex(t *testing.T) {
+	home := t.TempDir()
+	project := t.TempDir()
+	writeSkillFile(t, filepath.Join(home, ".banka", "skills", "banka-only", "SKILL.md"), "banka-only", "banka")
+	writeSkillFile(t, filepath.Join(home, ".agents", "skills", "shared", "SKILL.md"), "shared", "global")
+	projectSkill := filepath.Join(project, ".banka", "skills", "shared", "SKILL.md")
+	writeSkillFile(t, projectSkill, "shared", "project")
+	writeSkillFile(t, filepath.Join(project, ".codex", "skills", "legacy", "SKILL.md"), "legacy", "ignored")
+
+	catalog, err := Discover(project, home)
+	if err != nil {
+		t.Fatalf("Discover returned error: %v", err)
+	}
+	if len(catalog.Skills) != 2 {
+		t.Fatalf("got %d skills, want 2: %#v", len(catalog.Skills), catalog.Skills)
+	}
+	if catalog.Skills[0].Name != "banka-only" || catalog.Skills[1].Name != "shared" || catalog.Skills[1].Path != projectSkill {
+		t.Fatalf("unexpected catalog: %#v", catalog.Skills)
+	}
+}
+
 func TestSkillToolRequiresMainFileBeforeResource(t *testing.T) {
 	project := t.TempDir()
 	skillPath := filepath.Join(project, ".agents", "skills", "demo", "SKILL.md")
