@@ -2,14 +2,15 @@
 
 ## 项目概览
 
-**Banka Code** 是一个使用 TypeScript + Bun 构建的 Coding Agent，配备千恋万花风格的 TUI 终端界面。
+**Banka Code** 是一个使用 Go 构建的 Coding Agent。
 
-Agent 接收用户指令后进入迭代循环：调用 LLM → 解析工具调用 → 执行工具 → 将结果送回 LLM → 重复，直到模型不再请求工具或达到最大迭代次数。支持流式输出和多轮对话。
+Agent 接收用户指令后进入迭代循环：调用 LLM → 解析工具调用 → 执行工具 → 将结果送回 LLM → 重复，直到模型不再请求工具。支持流式输出、CLI 单次执行和全屏终端交互模式。
 
-- **运行时**：Bun
-- **语言**：TypeScript（strict mode，额外启用 `noUncheckedIndexedAccess`、`exactOptionalPropertyTypes`、`useUnknownInCatchVariables`、`noImplicitOverride`）
-- **TUI**：OpenTUI + SolidJS
-- **包管理**：bun
+- **语言**：Go
+- **构建**：`go build`
+- **测试**：`go test ./...`
+- **TUI**：Bubble Tea / Bubbles / Lip Gloss / Glamour
+- **LLM 协议**：OpenAI Responses API / OpenAI Chat Completions API / Anthropic Messages API
 
 ## 元规则
 
@@ -18,40 +19,13 @@ Agent 接收用户指令后进入迭代循环：调用 LLM → 解析工具调�
 - 只做用户明确要求的事；不擅自扩展范围
 - 先搜索再修改，先验证再结束
 
-## 项目命名
-
-项目名 **banka** 来源于 [千恋＊万花](https://www.yuzu-soft.com/products/senren/)（Senren\*Banka）。
-
-相关意象可自由使用：神刀、穗织、温泉小镇、和风、巫女、樱粉、暖橘等。保持灵动、不过度。
-
 ## 技术约束
 
-### TypeScript
-
-- strict mode，零 `any`、零 `@ts-ignore`、零 `@ts-expect-error`
-- 优先 `interface` 而非 `type`（除非需要联合类型、交叉类型等 `type` 独有能力）
-- 导出符号必须有 JSDoc 注释
-- 文件头注释格式：
-
-```typescript
-/**
- * {模块描述}
- */
-```
-
-### Bun
-
-- 使用 Bun 原生 API（`Bun.file()`、`Bun.spawn()`、`Bun.Glob` 等），不引入 Node.js polyfill
-  - 注意：当前 `file-tools.ts` 和 `glob-tool.ts` / `grep-tool.ts` 使用了 `node:fs/promises` 的 `mkdir` / `stat` 和 `node:path` 的 `join` / `relative` / `dirname`，这是合理的——Bun 兼容这些 Node.js API
-- 测试使用 `bun test`
-- 脚本使用 `bun run` 执行
-
-### 依赖管理
-
-- 添加依赖前先检查项目是否已有同类能力
-- 优先已有依赖，一次只更新一个主要依赖
-- 记录引入原因（commit message 或注释）
-- 当前生产依赖：`ai`、`@ai-sdk/openai`、`@ai-sdk/anthropic`、`@opentui/core`、`@opentui/solid`、`solid-js`
+- 优先使用 Go 标准库，不引入不必要依赖
+- 公共包、公共类型和公共函数需要有文档注释
+- 错误要带清晰上下文，不吞错误
+- 文件路径必须经过工作区安全校验
+- 删除或移动文件前先确认它属于当前任务范围
 
 ## 架构
 
@@ -59,212 +33,102 @@ Agent 接收用户指令后进入迭代循环：调用 LLM → 解析工具调�
 
 ```
 用户输入
-  → index.ts（CLI 入口，解析参数）
-  → runAgentLoop()（迭代循环）
-    → generateText()（Vercel AI SDK 调用 LLM）
-    → 解析 result.toolCalls
-    → executeToolCall()（执行工具）
-    → 将 ToolResultMessage 追加到消息列表
-    → 重复直到无工具调用或达到 maxIterations
+  → cmd/banka/main.go
+  → agent.Run()
+    → llm.Client.Generate()
+    → 解析 tool_calls
+    → tools.Registry.Execute()
+    → 将工具结果追加到消息列表
+    → 重复直到无工具调用
 ```
 
 ### 模块职责
 
-| 模块 | 职责 | 关键文件 |
-|------|------|----------|
-| `agent/` | Agent 主循环（多轮对话） | `run-agent-loop.ts` |
-| `errors/` | 自定义错误层级 | `banka-error.ts`（BankaError → ConfigurationError / ModelResponseError / ToolExecutionError / PathSecurityError） |
-| `messages/` | 会话消息模型 | `message.ts`（UserMessage / AssistantMessage / ToolResultMessage） |
-| `models/` | LLM 客户端工厂 | `create-model-client.ts`（基于 Vercel AI SDK） |
-| `prompt/` | 系统提示词 | `system-prompt.md`（万花角色设定，独立 MD 文件） |
-| `runtime/` | 环境变量加载 | `runtime-config.ts` |
-| `shared/` | 共享工具 | `is-record.ts`（类型守卫） |
-| `tools/` | 工具系统 | 见下方工具系统章节 |
-| `tui/` | OpenTUI + SolidJS 界面 | `app.tsx`（主界面）、`logo.tsx`、`spinner.tsx`、`theme.ts`、`output.ts`、`message-format.ts`、`hitokoto.ts`、`run-tui.tsx` |
-
-### 模型客户端
-
-基于 [Vercel AI SDK](https://sdk.vercel.ai)，通过 `createLanguageModel()` 创建 `LanguageModel` 实例：
-
-- `openai` provider → `@ai-sdk/openai`（兼容所有 OpenAI 兼容 API：Ollama、GLM、Kimi、MiniMax、Qwen、Xiaomi 等）
-- `anthropic` provider → `@ai-sdk/anthropic`
-
-Agent loop 通过 `generateText()` 调用模型，内部消息模型与 SDK 消息格式之间通过适配器转换。
-
-### 错误层级
-
-```
-BankaError (base)
-├── ConfigurationError    — 运行时配置错误
-├── ModelResponseError    — 模型响应格式错误
-├── ToolExecutionError    — 工具执行错误
-└── PathSecurityError     — 路径越界错误
-```
+| 模块 | 职责 |
+|------|------|
+| `cmd/banka/` | CLI 入口，参数解析，运行单次模式或交互模式 |
+| `internal/agent/` | Agent 主循环 |
+| `internal/config/` | `.env` 和环境变量配置加载 |
+| `internal/instructions/` | 全局和项目 `AGENTS.md` 分层加载 |
+| `internal/llm/` | OpenAI Responses / Chat / Anthropic 客户端 |
+| `internal/mcp/` | MCP 配置、stdio/HTTP 客户端和能力适配 |
+| `internal/messages/` | 会话消息模型 |
+| `internal/prompt/` | 默认系统提示词 |
+| `internal/skills/` | `SKILL.md` 发现和按需资源加载 |
+| `internal/tools/` | 工具系统和内置工具 |
+| `internal/tui/` | 全屏终端交互模式、流式渲染和内置命令 |
 
 ## Provider 支持
 
-| Provider | `BANKA_PROVIDER` 值 | 需要 API Key | SDK 包 |
-|----------|---------------------|-------------|--------|
-| OpenAI 及所有兼容 API | `openai`（默认） | 是 | `@ai-sdk/openai` |
-| Anthropic | `anthropic` | 是 | `@ai-sdk/anthropic` |
-
-`openai` provider 兼容所有 OpenAI Chat Completions API，包括 Ollama、GLM（智谱）、Kimi、MiniMax、Qwen（通义）、Xiaomi（MiMo）等。只需修改 `BANKA_BASE_URL` 和 `BANKA_API_KEY` 即可切换。
+| Provider | `BANKA_PROVIDER` 值 | 状态 |
+|----------|---------------------|------|
+| OpenAI Responses API | `openai` | 已支持 |
+| OpenAI Chat 兼容 API | `openai-chat` | 已支持 |
+| Anthropic Messages API | `anthropic` | 已支持 |
 
 ## 工具系统
 
-### 架构
+| 工具名 | 功能 | 关键细节 |
+|--------|------|----------|
+| `Bash` | 执行终端命令 | 默认离线 bubblewrap；沙箱外执行需用户批准 |
+| `Read` | 读取文件 | 限 1MB 文本文件，支持行偏移和上限 |
+| `Write` | 写入文件 | 自动创建父目录 |
+| `Edit` | 局部编辑文件 | 精确替换，目标文本必须唯一 |
+| `Glob` | 按 pattern 查找文件 | 最多 100 条结果 |
+| `Grep` | 按正则搜索文件内容 | 支持 `content` / `files_with_matches` 输出模式 |
+| `ApplyPatch` | 应用统一 diff | 完整补丁先校验，拒绝越界和符号链接补丁 |
+| `WebFetch` | 读取公共网页 | HTTP(S) 文本、SSRF 防护、用户审批 |
+| `AskUser` | 向用户提问 | 暂停 Agent，收到回答后恢复工具循环 |
+| `Skill` | 加载技能 | 完整读取 `SKILL.md` 后按需读取资源 |
 
-```
-ToolDefinition (接口)
-  → ToolRegistry (名称索引)
-  → executeToolCall() (调用执行器)
-  → createTools() (工具集工厂)
-```
+MCP 还会按服务器动态注册 tools，并提供 resources、resource templates 和 prompts 访问工具。所有文件操作通过 `tools.ResolveSafePath()` 校验词法路径和符号链接真实路径，确保不越出 `workspaceRoot`。Bash 与 MCP 子进程默认不继承 `BANKA_*` 凭据。
 
-### 工具列表
+## 开发流程
 
-| 工具名 | 功能 | 源文件 | 关键细节 |
-|--------|------|--------|----------|
-| `Bash` | 执行终端命令 | `src/tools/bash-tool.ts` | zsh -lc、30s 超时、输出截断 12KB |
-| `Read` | 读取文件 | `src/tools/file-tools.ts` | 限 1MB 文本文件 |
-| `Write` | 写入文件 | `src/tools/file-tools.ts` | 自动创建父目录 |
-| `Edit` | 局部编辑文件 | `src/tools/file-tools.ts` | 精确替换，目标文本必须唯一 |
-| `Glob` | 按 pattern 查找文件 | `src/tools/glob-tool.ts` | 最多 100 条结果，使用 `Bun.Glob` |
-| `Grep` | 按正则搜索文件内容 | `src/tools/grep-tool.ts` | 支持 content / files_with_matches 模式，跳过二进制文件 |
+复杂任务按这个顺序推进：
 
-### 安全机制
-
-所有文件操作通过 `resolveSafePath()` 校验路径，确保不越出 `workspaceRoot`。
-
-Bash 工具额外具备双层沙箱：
-- **应用层**（`bash-sandbox.ts`）：命令参数校验，拒绝绝对路径越界、`..` 逃逸、提权命令、危险环境变量修改、重定向到工作区外
-- **OS 层**（`bwrap-sandbox.ts`）：通过 bubblewrap 隔离文件系统（`--unshare-all`），bwrap 不可用时自动降级到应用层校验
-
-## 意图路由
-
-| 用户表述 | 默认动作 |
-|----------|----------|
-| 「解释 / 分析 / 对比 / 怎么做」 | 只研究和回答，不修改文件 |
-| 「查一下 / 看看 / 排查 / 定位」 | 先搜索代码、配置、日志，再给结论 |
-| 「实现 / 添加 / 修改 / 修复」 | 先找现有模式和边界，再做最小实现 |
-| 「重构 / 优化 / 清理」 | 先评估收益、风险、影响范围，再分步执行 |
-| 需求不清楚 | 先探索；仍不清楚时只问一个最小必要问题 |
+1. 理解：读现有实现，找类似代码。
+2. 规划：拆成清楚的小步骤。
+3. 测试：能补测试就优先补测试。
+4. 实现：用尽量少的代码解决问题。
+5. 验证：运行相关测试、构建或检查。
+6. 总结：说明改了什么、为什么、怎么验证。
 
 ## 代码风格
 
-### 命名
+- 文件名使用小写蛇形或短横线风格，遵循 Go 社区常规
+- 包名短小、全小写
+- 变量和函数名优先清晰，不为缩短而牺牲可读性
+- 公共 API 使用 Go doc 注释
+- 测试文件命名为 `*_test.go`
+- 测试数据自包含，避免依赖外部环境
 
-- 文件：`kebab-case`（`agent-runner.ts`）
-- 类 / 接口：`PascalCase`（`ToolExecutor`）
-- 函数 / 变量：`camelCase`（`parseCommand`）
-- 常量：`UPPER_SNAKE_CASE`（`MAX_RETRIES`）
-- 类型参数：`PascalCase`，单个字母仅用于简单泛型（`T`、`K`、`V`）
-- **工具内部名**：`PascalCase`（`Bash` / `Read` / `Write` / `Edit` / `Glob` / `Grep`）
-- 私有字段：`#` 前缀（ECMAScript private）
-
-### 结构
-
-- 一个文件一个职责
-- 公共 API 通过 `index.ts` 统一导出（当前各模块尚未建立 barrel export，入口文件直接引用路径）
-- 错误处理使用自定义 `BankaError` 子类，不抛裸字符串
-- 异步操作使用 `async/await`，不用 `.then()` 链
-
-### 注释
-
-- 解释「为什么」，不重复「做了什么」
-- `TODO` 必须关联上下文（issue 编号或简要说明）
-- 公共 API 必须有 JSDoc
-
-### TUI / 视觉
-
-- 配色使用千恋万花主题（樱粉、暖橘、淡金、赤褐），定义在 `src/tui/theme.ts`
-- Logo 组件含 Ciallo 流光动画（字符逐帧着色）
-- 启动时通过 Hitokoto API 获取一言
-- 工具调用在 TUI 中显示人类可读名 + 参数摘要（如 `Bash · ls -la`、`Read · src/tui/app.tsx`）
-- 状态栏使用灯笼走马灯动画（三角波 + 暖色尾焰）
-
-## 执行协议
-
-### 1. 理解
-
-开始前先明确：目标、约束、影响范围、验证方式。
-
-### 2. 探索
-
-- 先找 2-3 个类似实现，确认现有模式
-- 先看入口、调用链、配置和测试，再动代码
-- 仓库是第一事实来源；未读内容不做确定性判断
-
-### 3. 决策
-
-- 优先复用已有实现、已有依赖、已有工具
-- 优先选择「无聊但可靠」的方案
-- 超过单文件、跨层、或范围不明的修改，先给简要计划再动手
-
-### 4. 实施
-
-- 小步修改，保持每一步可验证、可回滚
-- Bugfix 只修问题本身，不顺带重构
-- 非必要不新建文件、不引入新依赖、不改公共接口
-
-### 5. 验证
-
-- `bun run check` 类型检查通过
-- `bun test` 测试通过
-- 新功能有对应测试
-- `lsp_diagnostics` 无新增错误
-
-### 6. 交付
-
-说明：改了什么、改在哪、如何验证、是否存在未处理风险。
-
-## 硬约束
-
-| 规则 | 说明 |
-|------|------|
-| 类型安全 | 禁止 `any`、`@ts-ignore`、`@ts-expect-error`、空 `catch` |
-| 需求边界 | 禁止擅自扩大需求、追加功能、顺手重构 |
-| 代码猜测 | 禁止对未读代码、未跑结果、未看文档的内容做确定性判断 |
-| 验证造假 | 未执行命令、未跑测试、未看输出，不得声称「已验证」 |
-| 卡点次数 | 同一问题最多尝试 3 次；超过后停止并说明现状 |
-
-## 测试
-
-- 文件命名：`{模块名}.test.ts`，与源文件同目录
-- 核心业务、边界、异常必须覆盖
-- 测试互不依赖，数据自包含
-- 当前测试覆盖：agent loop、runtime config、file tools、glob tool、grep tool、safe path、bash sandbox、bwrap sandbox、output、message format
-
-## 构建
+## 可用命令
 
 ```bash
-bun run build      # 构建当前平台原生二进制 → dist/
-bun run build:all  # 构建 Linux/macOS/Windows 全平台二进制
+go run ./cmd/banka              # 启动交互模式
+go run ./cmd/banka "提示词"       # 单次执行模式
+go test ./...                   # 运行测试
+make test
+make build
+make build-all
 ```
 
-构建脚本 `scripts/build.ts` 使用 `Bun.build()` + `compile` 选项，输出自包含二进制文件。构建时会通过 `define` 注入 `BANKA_CODE_VERSION`。
+## Git 规范
 
-## Git 提交
-
-遵循 [Conventional Commits](https://www.conventionalcommits.org/)，**提交信息使用中文**：
-
-```
-type(scope): 简要描述
-
-详细说明（可选）
-```
-
-类型：`feat` / `fix` / `refactor` / `docs` / `test` / `chore` / `perf`
-
-如用户要求提交，末尾添加：
-
-```
-Co-Authored-By: opencode <noreply@opencode.ai>
-```
+- 不主动提交，除非用户明确要求
+- 提交前查看 `git status`、`git diff` 和近期提交风格
+- 提交信息遵循 Conventional Commits
+- 提交信息使用中文
+- 不使用 `--no-verify`
+- 不使用 `git reset --hard`、`git checkout --` 等破坏性命令
 
 ## 完成定义
 
 - 用户请求的范围已覆盖
-- 修改与现有代码风格一致
-- 类型检查 / 测试 / 构建已通过
-- 功能已实际验证，有对应证据
+- 修改与 Go 项目风格一致
+- `go test ./...` 通过
+- `go test -race ./...` 通过
+- `go vet ./...` 通过
+- `make build` 通过
+- 已说明未处理风险或迁移差异
