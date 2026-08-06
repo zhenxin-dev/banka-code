@@ -44,6 +44,7 @@ banka              启动交互模式
 banka <提示词>      单次执行模式，输出结果后退出
 banka -h, --help   显示帮助
 banka -v, --version 显示版本号
+banka --permission-mode <模式>  设置 default、full-access 或 yolo
 ```
 
 ### 交互模式内置命令
@@ -54,6 +55,7 @@ banka -v, --version 显示版本号
 | `/clear` | 清空当前会话内容 |
 | `/undo` | 回滚上一轮会话上下文，不修改工作区文件 |
 | `/compact` | 将较早会话压缩为摘要，保留最近两轮原文 |
+| `/permissions` | 使用选择菜单切换当前会话权限模式 |
 | `/status` | 查看当前会话状态 |
 | `/exit` | 退出 Banka Code |
 | `/quit` | 退出 Banka Code |
@@ -67,6 +69,7 @@ BANKA_PROVIDER=openai        # openai | openai-chat | anthropic
 BANKA_API_KEY=your-api-key   # 必填
 BANKA_BASE_URL=https://...   # API 端点（可选，留空使用 Provider 默认值）
 BANKA_MODEL=your-model-id    # 模型名称（必填）
+BANKA_PERMISSION_MODE=default # default | full-access | yolo
 ```
 
 ### OpenAI Responses（默认）
@@ -126,7 +129,15 @@ BANKA_MODEL=claude-sonnet-4-20250514
 | **AskUser** | 向用户提问 | Agent 暂停，TUI/CLI 回答后继续原工具循环 |
 | **Skill** | 加载技能 | 先完整读取 `SKILL.md`，再按需读取技能资源 |
 
-所有文件操作通过 `ResolveSafePath()` 校验词法路径和符号链接真实路径。Bash 会拒绝越界路径、提权命令、危险环境变量操作和越界重定向；检测到 bubblewrap 时隔离文件系统和网络。需要网络或工作区外访问时，模型必须设置 `sandbox_permissions=require_escalated` 并给出理由，用户批准后只放行本次调用。
+默认模式下，所有文件操作通过 `ResolveSafePath()` 校验词法路径和符号链接真实路径。Bash 会拒绝越界路径、提权命令、危险环境变量操作和越界重定向；检测到 bubblewrap 时隔离文件系统和网络。需要网络或工作区外访问时，模型必须设置 `sandbox_permissions=require_escalated` 并给出理由。
+
+审批使用方向键选择菜单，支持“允许一次”“始终允许此类操作（本次会话）”和“拒绝”。“始终允许”只保存在当前进程内，不会写入配置文件。
+
+| 权限模式 | 行为 |
+|----------|------|
+| `default` | 默认沙箱；工作区外、网络和未信任 MCP 操作按需审批 |
+| `full-access` | 关闭文件、Bash 和网络沙箱；未信任 MCP 仍需审批 |
+| `yolo` | 完全访问，并自动批准包括未信任 MCP 在内的所有权限请求 |
 
 Bash 与 MCP 子进程不会继承 `BANKA_*` 模型配置和 API Key。MCP 配置若显式传入同名环境变量则视为用户授权。
 

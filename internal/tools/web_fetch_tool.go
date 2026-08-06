@@ -26,7 +26,7 @@ func NewWebFetchTool() Definition {
 
 func (*webFetchTool) Name() string { return "WebFetch" }
 func (*webFetchTool) Description() string {
-	return "Fetch a public HTTP(S) text document. Private, loopback, link-local, and local-network addresses are blocked."
+	return "Fetch an HTTP(S) text document. Private and local addresses require full-access or YOLO mode."
 }
 func (*webFetchTool) InputSchema() JSONSchema {
 	return objectSchema(map[string]any{
@@ -42,20 +42,18 @@ func (t *webFetchTool) Execute(parent context.Context, arguments map[string]any,
 	if err != nil {
 		return Result{}, fmt.Errorf("invalid URL: %w", err)
 	}
-	if err := validateWebURL(parent, target, t.allowPrivate); err != nil {
+	allowPrivate := t.allowPrivate || toolContext.PermissionMode().HasFullAccess()
+	if err := validateWebURL(parent, target, allowPrivate); err != nil {
 		return Result{}, err
 	}
-	if toolContext.Interaction == nil {
-		return Result{Content: "Network access requires interactive user approval.", IsError: true}, nil
-	}
-	decision, err := toolContext.Interaction.RequestApproval(parent, ApprovalRequest{
-		ToolName: "WebFetch", Command: "GET " + target.String(),
+	allowed, err := toolContext.RequestPermission(parent, ApprovalRequest{
+		ToolName: "WebFetch", Kind: ApprovalNetwork, Scope: "web-fetch", Command: "GET " + target.String(),
 		Justification: "读取公共网络上的文本文档",
 	})
 	if err != nil {
 		return Result{}, err
 	}
-	if decision != ApprovalAllowOnce {
+	if !allowed {
 		return Result{Content: "User denied network access.", IsError: true}, nil
 	}
 	ctx, cancel := context.WithTimeout(parent, webFetchTimeout)
@@ -66,7 +64,11 @@ func (t *webFetchTool) Execute(parent context.Context, arguments map[string]any,
 	}
 	request.Header.Set("Accept", "text/html, text/plain, application/json, application/xml;q=0.9, */*;q=0.1")
 	request.Header.Set("User-Agent", "Banka-Code/0.1 WebFetch")
-	response, err := t.client.Do(request)
+	client := t.client
+	if allowPrivate && !t.allowPrivate {
+		client = newHTTPClient(true)
+	}
+	response, err := client.Do(request)
 	if err != nil {
 		return Result{}, err
 	}
@@ -91,6 +93,10 @@ func (t *webFetchTool) Execute(parent context.Context, arguments map[string]any,
 }
 
 func newPublicHTTPClient() *http.Client {
+	return newHTTPClient(false)
+}
+
+func newHTTPClient(allowPrivate bool) *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
 	transport.DialContext = func(ctx context.Context, network string, address string) (net.Conn, error) {
@@ -106,7 +112,7 @@ func newPublicHTTPClient() *http.Client {
 			return nil, fmt.Errorf("host resolved to no addresses: %s", host)
 		}
 		for _, address := range addresses {
-			if !isPublicIP(address.IP) {
+			if !allowPrivate && !isPublicIP(address.IP) {
 				return nil, fmt.Errorf("WebFetch blocks non-public address for host %s", host)
 			}
 		}
@@ -126,7 +132,7 @@ func newPublicHTTPClient() *http.Client {
 			if len(via) >= 10 {
 				return fmt.Errorf("too many redirects")
 			}
-			return validateWebURL(request.Context(), request.URL, false)
+			return validateWebURL(request.Context(), request.URL, allowPrivate)
 		},
 	}
 }

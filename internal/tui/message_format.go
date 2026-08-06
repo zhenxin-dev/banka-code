@@ -20,6 +20,7 @@ var builtinCommands = []builtinCommand{
 	{Name: "clear", Command: "/clear", Description: "清空当前会话内容"},
 	{Name: "undo", Command: "/undo", Description: "回滚上一轮会话上下文（不修改文件）"},
 	{Name: "compact", Command: "/compact", Description: "压缩较早的会话上下文"},
+	{Name: "permissions", Command: "/permissions", Description: "切换权限模式"},
 	{Name: "status", Command: "/status", Description: "查看当前会话状态"},
 	{Name: "exit", Command: "/exit", Description: "退出 Banka Code"},
 	{Name: "quit", Command: "/quit", Description: "退出 Banka Code"},

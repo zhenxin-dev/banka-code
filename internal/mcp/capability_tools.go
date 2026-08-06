@@ -215,18 +215,15 @@ func approveMCPAccess(ctx context.Context, toolContext tools.Context, serverName
 	if connection.trusted {
 		return nil, nil
 	}
-	if toolContext.Interaction == nil {
-		result := tools.Result{Content: "MCP access requires interactive user approval.", IsError: true}
-		return &result, nil
-	}
-	decision, err := toolContext.Interaction.RequestApproval(ctx, tools.ApprovalRequest{
-		ToolName: "MCP", Command: "MCP " + serverName + ": " + action,
+	allowed, err := toolContext.RequestPermission(ctx, tools.ApprovalRequest{
+		ToolName: "MCP", Kind: tools.ApprovalExternal, Scope: "mcp:" + serverName,
+		Command:       "MCP " + serverName + ": " + action,
 		Justification: "访问未标记为受信任的 MCP 服务器",
 	})
 	if err != nil {
 		return nil, err
 	}
-	if decision != tools.ApprovalAllowOnce {
+	if !allowed {
 		result := tools.Result{Content: "User denied MCP access.", IsError: true}
 		return &result, nil
 	}

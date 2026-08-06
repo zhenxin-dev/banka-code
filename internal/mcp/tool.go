@@ -49,19 +49,18 @@ func (t *mcpTool) Description() string           { return t.description }
 func (t *mcpTool) InputSchema() tools.JSONSchema { return t.schema }
 func (t *mcpTool) Execute(ctx context.Context, arguments map[string]any, toolContext tools.Context) (tools.Result, error) {
 	if !t.trusted {
-		if toolContext.Interaction == nil {
-			return tools.Result{Content: "MCP tool execution requires interactive user approval.", IsError: true}, nil
-		}
 		encoded, _ := json.Marshal(arguments)
-		decision, err := toolContext.Interaction.RequestApproval(ctx, tools.ApprovalRequest{
+		allowed, err := toolContext.RequestPermission(ctx, tools.ApprovalRequest{
 			ToolName:      t.name,
+			Kind:          tools.ApprovalExternal,
+			Scope:         "mcp:" + t.serverName,
 			Command:       fmt.Sprintf("MCP %s/%s %s", t.serverName, t.remoteName, encoded),
 			Justification: "调用未标记为受信任的 MCP 服务器工具",
 		})
 		if err != nil {
 			return tools.Result{}, err
 		}
-		if decision != tools.ApprovalAllowOnce {
+		if !allowed {
 			return tools.Result{Content: "User denied MCP tool execution.", IsError: true}, nil
 		}
 	}

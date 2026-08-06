@@ -6,7 +6,30 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/zhenxin-dev/banka-code/internal/permissions"
 )
+
+func TestFullAccessAllowsFileOutsideWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	arguments := map[string]any{"path": outside, "content": "allowed"}
+
+	if _, err := NewWriteTool().Execute(context.Background(), arguments, Context{WorkspaceRoot: workspace}); err == nil {
+		t.Fatal("default sandbox allowed a file outside the workspace")
+	}
+	result, err := NewWriteTool().Execute(context.Background(), arguments, Context{
+		WorkspaceRoot: workspace,
+		Permissions:   permissions.NewPolicy(permissions.ModeFullAccess),
+	})
+	if err != nil || result.IsError {
+		t.Fatalf("full access rejected outside file: result=%#v err=%v", result, err)
+	}
+	content, err := os.ReadFile(outside)
+	if err != nil || string(content) != "allowed" {
+		t.Fatalf("outside file was not written: content=%q err=%v", content, err)
+	}
+}
 
 func TestWriteReadAndEditTools(t *testing.T) {
 	root := t.TempDir()

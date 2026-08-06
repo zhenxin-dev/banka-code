@@ -27,10 +27,10 @@ func NewWriteTool() Definition { return writeTool{} }
 func NewEditTool() Definition { return editTool{} }
 
 func (readTool) Name() string        { return "Read" }
-func (readTool) Description() string { return "Read a text file from the current workspace." }
+func (readTool) Description() string { return "Read a text file permitted by the current access mode." }
 func (readTool) InputSchema() JSONSchema {
 	return objectSchema(map[string]any{
-		"path": stringSchema("Path to the file relative to the workspace root."),
+		"path": stringSchema("File path. Outside-workspace paths require full-access or YOLO mode."),
 		"offset": JSONSchema{
 			"type": "integer", "description": "One-based line number to start at. Defaults to 1.", "minimum": 1,
 		},
@@ -45,7 +45,7 @@ func (readTool) Execute(_ context.Context, arguments map[string]any, toolContext
 		return Result{}, fmt.Errorf("Read tool requires a non-empty 'path' string.")
 	}
 
-	absolutePath, err := ResolveSafePath(toolContext.WorkspaceRoot, pathValue)
+	absolutePath, err := toolContext.ResolvePath(pathValue)
 	if err != nil {
 		return Result{}, err
 	}
@@ -93,11 +93,11 @@ func (readTool) Execute(_ context.Context, arguments map[string]any, toolContext
 
 func (writeTool) Name() string { return "Write" }
 func (writeTool) Description() string {
-	return "Create or overwrite a text file in the current workspace."
+	return "Create or overwrite a text file permitted by the current access mode."
 }
 func (writeTool) InputSchema() JSONSchema {
 	return objectSchema(map[string]any{
-		"path":    stringSchema("Path to the file relative to the workspace root."),
+		"path":    stringSchema("File path. Outside-workspace paths require full-access or YOLO mode."),
 		"content": stringSchema("Full text content to write."),
 	}, "path", "content")
 }
@@ -111,7 +111,7 @@ func (writeTool) Execute(_ context.Context, arguments map[string]any, toolContex
 		return Result{}, fmt.Errorf("Write tool requires a string 'content' field.")
 	}
 
-	absolutePath, err := ResolveSafePath(toolContext.WorkspaceRoot, pathValue)
+	absolutePath, err := toolContext.ResolvePath(pathValue)
 	if err != nil {
 		return Result{}, err
 	}
@@ -128,7 +128,7 @@ func (editTool) Name() string        { return "Edit" }
 func (editTool) Description() string { return "Replace a unique text fragment inside a file." }
 func (editTool) InputSchema() JSONSchema {
 	return objectSchema(map[string]any{
-		"path":    stringSchema("Path to the file relative to the workspace root."),
+		"path":    stringSchema("File path. Outside-workspace paths require full-access or YOLO mode."),
 		"oldText": stringSchema("Existing text that must appear exactly once."),
 		"newText": stringSchema("Replacement text."),
 	}, "path", "oldText", "newText")
@@ -147,7 +147,7 @@ func (editTool) Execute(_ context.Context, arguments map[string]any, toolContext
 		return Result{}, fmt.Errorf("Edit tool requires a string 'newText' field.")
 	}
 
-	absolutePath, err := ResolveSafePath(toolContext.WorkspaceRoot, pathValue)
+	absolutePath, err := toolContext.ResolvePath(pathValue)
 	if err != nil {
 		return Result{}, err
 	}

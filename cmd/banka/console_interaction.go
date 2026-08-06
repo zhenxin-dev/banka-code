@@ -24,14 +24,16 @@ func (i *consoleInteraction) RequestApproval(ctx context.Context, request tools.
 	if err := ctx.Err(); err != nil {
 		return tools.ApprovalDeny, err
 	}
-	fmt.Fprintf(i.writer, "\n需要执行受限操作：\n%s\n理由：%s\n允许本次执行？[y/N] ", request.Command, request.Justification)
+	fmt.Fprintf(i.writer, "\n需要执行受限操作：\n%s\n理由：%s\n\n1. 允许一次\n2. 始终允许此类操作（本次会话）\n3. 拒绝\n选择 [1-3]：", request.Command, request.Justification)
 	answer, err := i.reader.ReadString('\n')
 	if err != nil && len(answer) == 0 {
 		return tools.ApprovalDeny, err
 	}
-	switch strings.ToLower(strings.TrimSpace(answer)) {
-	case "y", "yes", "允许", "同意":
+	switch strings.TrimSpace(answer) {
+	case "1":
 		return tools.ApprovalAllowOnce, nil
+	case "2":
+		return tools.ApprovalAllowAlways, nil
 	default:
 		return tools.ApprovalDeny, nil
 	}

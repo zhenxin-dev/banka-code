@@ -12,6 +12,7 @@ import (
 	"github.com/zhenxin-dev/banka-code/internal/llm"
 	mcpclient "github.com/zhenxin-dev/banka-code/internal/mcp"
 	"github.com/zhenxin-dev/banka-code/internal/messages"
+	"github.com/zhenxin-dev/banka-code/internal/permissions"
 	"github.com/zhenxin-dev/banka-code/internal/prompt"
 	"github.com/zhenxin-dev/banka-code/internal/skills"
 	"github.com/zhenxin-dev/banka-code/internal/tools"
@@ -28,7 +29,10 @@ func main() {
 }
 
 func run(args []string) error {
-	for _, arg := range args {
+	promptArgs := make([]string, 0, len(args))
+	var permissionOverride *permissions.Mode
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
 		switch arg {
 		case "-v", "--version":
 			fmt.Printf("Banka Code v%s\n", version)
@@ -36,6 +40,26 @@ func run(args []string) error {
 		case "-h", "--help":
 			printHelp()
 			return nil
+		case "--permission-mode":
+			if index+1 >= len(args) {
+				return fmt.Errorf("--permission-mode 需要一个值：default、full-access 或 yolo")
+			}
+			index++
+			mode, err := permissions.ParseMode(args[index])
+			if err != nil {
+				return err
+			}
+			permissionOverride = &mode
+		default:
+			if value, ok := strings.CutPrefix(arg, "--permission-mode="); ok {
+				mode, err := permissions.ParseMode(value)
+				if err != nil {
+					return err
+				}
+				permissionOverride = &mode
+				continue
+			}
+			promptArgs = append(promptArgs, arg)
 		}
 	}
 
@@ -46,6 +70,9 @@ func run(args []string) error {
 	runtimeConfig, err := config.Load(workspaceRoot)
 	if err != nil {
 		return err
+	}
+	if permissionOverride != nil {
+		runtimeConfig.PermissionMode = *permissionOverride
 	}
 	model, err := llm.NewClient(runtimeConfig)
 	if err != nil {
@@ -86,9 +113,12 @@ func run(args []string) error {
 		}
 	}
 	registry := tools.NewRegistry(definitions)
-	toolContext := tools.Context{WorkspaceRoot: runtimeConfig.WorkspaceRoot}
+	toolContext := tools.Context{
+		WorkspaceRoot: runtimeConfig.WorkspaceRoot,
+		Permissions:   permissions.NewPolicy(runtimeConfig.PermissionMode),
+	}
 
-	userPrompt := strings.TrimSpace(strings.Join(args, " "))
+	userPrompt := strings.TrimSpace(strings.Join(promptArgs, " "))
 	if userPrompt == "" {
 		return tui.Run(ctx, os.Stdin, os.Stdout, version, runtimeConfig, systemPrompt, details, model, registry, toolContext)
 	}
@@ -122,5 +152,6 @@ func printHelp() {
 选项:
   -h, --help         显示帮助
   -v, --version      显示版本号
+  --permission-mode  权限模式：default、full-access、yolo
 `, version)
 }

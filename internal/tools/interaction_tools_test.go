@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/zhenxin-dev/banka-code/internal/permissions"
 )
 
 func TestAskUserReturnsInteractiveAnswer(t *testing.T) {
@@ -53,6 +55,55 @@ func TestEscalatedBashRunsAfterApproval(t *testing.T) {
 	}
 	if result.IsError || !strings.Contains(result.Content, "stdout:\napproved") {
 		t.Fatalf("unexpected approved result: %#v", result)
+	}
+}
+
+func TestApprovalAllowAlwaysIsRememberedForMatchingScope(t *testing.T) {
+	interaction := &stubInteraction{decision: ApprovalAllowAlways}
+	policy := permissions.NewPolicy(permissions.ModeDefault)
+	toolContext := Context{WorkspaceRoot: t.TempDir(), Interaction: interaction, Permissions: policy}
+	request := ApprovalRequest{ToolName: "WebFetch", Kind: ApprovalNetwork, Scope: "web", Command: "GET https://example.com"}
+
+	allowed, err := toolContext.RequestPermission(context.Background(), request)
+	if err != nil || !allowed {
+		t.Fatalf("first approval failed: allowed=%v err=%v", allowed, err)
+	}
+	interaction.decision = ApprovalDeny
+	allowed, err = toolContext.RequestPermission(context.Background(), request)
+	if err != nil || !allowed {
+		t.Fatalf("remembered approval was not reused: allowed=%v err=%v", allowed, err)
+	}
+}
+
+func TestPermissionModesAutoApproveExpectedOperations(t *testing.T) {
+	request := ApprovalRequest{ToolName: "MCP", Kind: ApprovalExternal, Scope: "mcp:test"}
+	full := Context{Permissions: permissions.NewPolicy(permissions.ModeFullAccess)}
+	if allowed, _ := full.RequestPermission(context.Background(), request); allowed {
+		t.Fatal("full access unexpectedly trusted an external MCP server")
+	}
+	if allowed, _ := full.RequestPermission(context.Background(), ApprovalRequest{Kind: ApprovalHost}); !allowed {
+		t.Fatal("full access did not allow host access")
+	}
+	yolo := Context{Permissions: permissions.NewPolicy(permissions.ModeYOLO)}
+	if allowed, _ := yolo.RequestPermission(context.Background(), request); !allowed {
+		t.Fatal("YOLO did not auto-approve external access")
+	}
+}
+
+func TestFullAccessRunsDefaultBashWithoutApproval(t *testing.T) {
+	interaction := &stubInteraction{decision: ApprovalDeny}
+	result, err := NewBashTool().Execute(context.Background(), map[string]any{
+		"command": "printf full-access",
+	}, Context{
+		WorkspaceRoot: t.TempDir(),
+		Interaction:   interaction,
+		Permissions:   permissions.NewPolicy(permissions.ModeFullAccess),
+	})
+	if err != nil || result.IsError || !strings.Contains(result.Content, "stdout:\nfull-access") {
+		t.Fatalf("full-access Bash failed: result=%#v err=%v", result, err)
+	}
+	if interaction.approval.Command != "" {
+		t.Fatalf("full-access Bash unexpectedly requested approval: %#v", interaction.approval)
 	}
 }
 

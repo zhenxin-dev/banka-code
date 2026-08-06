@@ -53,6 +53,7 @@ Agent 接收用户指令后进入迭代循环：调用 LLM → 解析工具调�
 | `internal/llm/` | OpenAI Responses / Chat / Anthropic 客户端 |
 | `internal/mcp/` | MCP 配置、stdio/HTTP 客户端和能力适配 |
 | `internal/messages/` | 会话消息模型 |
+| `internal/permissions/` | 权限模式和会话级“始终允许”状态 |
 | `internal/prompt/` | 默认系统提示词 |
 | `internal/skills/` | `SKILL.md` 发现和按需资源加载 |
 | `internal/tools/` | 工具系统和内置工具 |
@@ -81,7 +82,9 @@ Agent 接收用户指令后进入迭代循环：调用 LLM → 解析工具调�
 | `AskUser` | 向用户提问 | 暂停 Agent，收到回答后恢复工具循环 |
 | `Skill` | 加载技能 | 完整读取 `SKILL.md` 后按需读取资源 |
 
-MCP 还会按服务器动态注册 tools，并提供 resources、resource templates 和 prompts 访问工具。所有文件操作通过 `tools.ResolveSafePath()` 校验词法路径和符号链接真实路径，确保不越出 `workspaceRoot`。Bash 与 MCP 子进程默认不继承 `BANKA_*` 凭据。
+权限模式包括默认沙箱、完全访问和 YOLO。审批通过 TUI 选择菜单完成，“始终允许”只在当前进程会话内生效。
+
+MCP 还会按服务器动态注册 tools，并提供 resources、resource templates 和 prompts 访问工具。默认沙箱模式下，文件操作通过 `tools.ResolveSafePath()` 校验词法路径和符号链接真实路径，确保不越出 `workspaceRoot`。Bash 与 MCP 子进程默认不继承 `BANKA_*` 凭据。
 
 ## 开发流程
 

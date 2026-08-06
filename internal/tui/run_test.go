@@ -11,6 +11,7 @@ import (
 	"github.com/zhenxin-dev/banka-code/internal/agent"
 	"github.com/zhenxin-dev/banka-code/internal/config"
 	"github.com/zhenxin-dev/banka-code/internal/messages"
+	"github.com/zhenxin-dev/banka-code/internal/permissions"
 	"github.com/zhenxin-dev/banka-code/internal/tools"
 )
 
@@ -101,10 +102,43 @@ func TestApprovalRequestPausesAndResumesAgent(t *testing.T) {
 	if model.pending == nil || model.pending.approval == nil {
 		t.Fatal("approval request did not enter pending state")
 	}
-	model.submitInteraction("y")
+	model.handleInteractionKey(tea.KeyPressMsg{Code: tea.KeyDown})
+	model.handleInteractionKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	result := <-response
-	if result.decision != tools.ApprovalAllowOnce || model.pending != nil {
+	if result.decision != tools.ApprovalAllowAlways || model.pending != nil {
 		t.Fatalf("approval was not resolved: result=%#v pending=%#v", result, model.pending)
+	}
+}
+
+func TestPermissionsCommandSelectsYOLOMode(t *testing.T) {
+	policy := permissions.NewPolicy(permissions.ModeDefault)
+	model := newAppModel(context.Background(), "0.1.0", config.RuntimeConfig{}, nil, tools.NewRegistry(nil), tools.Context{Permissions: policy})
+
+	model.submit("/permissions")
+	if model.pending == nil || !model.pending.permissions {
+		t.Fatal("permissions command did not open the mode selector")
+	}
+	model.handleInteractionKey(tea.KeyPressMsg{Code: tea.KeyDown})
+	model.handleInteractionKey(tea.KeyPressMsg{Code: tea.KeyDown})
+	model.handleInteractionKey(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if policy.Mode() != permissions.ModeYOLO || model.pending != nil {
+		t.Fatalf("permission mode was not updated: mode=%q pending=%#v", policy.Mode(), model.pending)
+	}
+}
+
+func TestPermissionSelectorFitsNarrowTerminal(t *testing.T) {
+	model := newAppModel(context.Background(), "0.1.0", config.RuntimeConfig{}, nil, tools.NewRegistry(nil), tools.Context{})
+	model.Update(tea.WindowSizeMsg{Width: 40, Height: 16})
+	model.submit("/permissions")
+	view := model.View()
+
+	if height := lipgloss.Height(view.Content); height > 16 {
+		t.Fatalf("permission selector height %d exceeds terminal", height)
+	}
+	for _, line := range strings.Split(view.Content, "\n") {
+		if width := lipgloss.Width(line); width > 40 {
+			t.Fatalf("permission selector width %d exceeds terminal: %q", width, line)
+		}
 	}
 }
 

@@ -21,6 +21,7 @@ import (
 	"github.com/zhenxin-dev/banka-code/internal/config"
 	"github.com/zhenxin-dev/banka-code/internal/llm"
 	"github.com/zhenxin-dev/banka-code/internal/messages"
+	"github.com/zhenxin-dev/banka-code/internal/permissions"
 	"github.com/zhenxin-dev/banka-code/internal/prompt"
 	"github.com/zhenxin-dev/banka-code/internal/tools"
 )
@@ -76,9 +77,38 @@ type questionRequestMsg struct {
 }
 
 type pendingInteraction struct {
-	approval *tools.ApprovalRequest
-	question *tools.QuestionRequest
-	response chan interactionResponse
+	approval    *tools.ApprovalRequest
+	question    *tools.QuestionRequest
+	response    chan interactionResponse
+	selection   int
+	permissions bool
+}
+
+type approvalOption struct {
+	label    string
+	decision tools.ApprovalDecision
+	status   string
+}
+
+type permissionModeOption struct {
+	label string
+	mode  permissions.Mode
+}
+
+func approvalOptions() []approvalOption {
+	return []approvalOption{
+		{label: "允许一次", decision: tools.ApprovalAllowOnce, status: "已允许本次受限操作"},
+		{label: "始终允许此类操作（本次会话）", decision: tools.ApprovalAllowAlways, status: "本次会话将始终允许此类操作"},
+		{label: "拒绝", decision: tools.ApprovalDeny, status: "已拒绝提权请求"},
+	}
+}
+
+func permissionModeOptions() []permissionModeOption {
+	return []permissionModeOption{
+		{label: permissions.ModeDefault.Label(), mode: permissions.ModeDefault},
+		{label: permissions.ModeFullAccess.Label(), mode: permissions.ModeFullAccess},
+		{label: permissions.ModeYOLO.Label(), mode: permissions.ModeYOLO},
+	}
 }
 
 type turnCheckpoint struct {
@@ -187,6 +217,9 @@ func newAppModel(ctx context.Context, version string, runtimeConfig config.Runti
 	view.FillHeight = true
 	events := make(chan tea.Msg, 256)
 	toolContext.Interaction = tuiInteraction{events: events}
+	if toolContext.Permissions == nil {
+		toolContext.Permissions = permissions.NewPolicy(runtimeConfig.PermissionMode)
+	}
 	return &appModel{
 		ctx: ctx, runtime: runtimeConfig, client: client, registry: registry, toolContext: toolContext, version: version,
 		systemPrompt: prompt.DefaultSystemPrompt,
@@ -357,11 +390,38 @@ func (m *appModel) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *appModel) handleInteractionKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	switch key.String() {
-	case "esc":
-		if m.pending.approval != nil {
+	if m.pending.approval != nil || m.pending.permissions {
+		count := len(approvalOptions())
+		if m.pending.permissions {
+			count = len(permissionModeOptions())
+		}
+		switch key.String() {
+		case "up":
+			m.pending.selection = moveCommandSelection(m.pending.selection, count, -1)
+			m.resize()
+			return m, nil
+		case "down":
+			m.pending.selection = moveCommandSelection(m.pending.selection, count, 1)
+			m.resize()
+			return m, nil
+		case "enter":
+			if m.pending.permissions {
+				return m.selectPermissionMode()
+			}
+			return m.selectApproval()
+		case "esc":
+			if m.pending.permissions {
+				m.pending = nil
+				m.input.Placeholder = "给 Banka Code 发消息…"
+				m.resize()
+				return m, m.input.Focus()
+			}
 			return m.resolveInteraction(interactionResponse{decision: tools.ApprovalDeny}, "已拒绝提权请求")
 		}
+		return m, nil
+	}
+	switch key.String() {
+	case "esc":
 		m.pending = nil
 		m.input.Reset()
 		m.input.Placeholder = "等待中…"
@@ -380,13 +440,29 @@ func (m *appModel) handleInteractionKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd
 
 func (m *appModel) beginApproval(message approvalRequestMsg) {
 	request := message.request
-	m.pending = &pendingInteraction{approval: &request, response: message.response}
+	m.pending = &pendingInteraction{approval: &request, response: message.response, selection: 0}
 	m.input.Reset()
-	m.input.Placeholder = "输入 y 允许一次，n 拒绝…"
+	m.input.Placeholder = "使用方向键选择…"
 	m.entries = append(m.entries, uiEntry{kind: "approval", body: fmt.Sprintf(
 		"请求执行受限操作\n\n操作：`%s`\n\n理由：%s", request.Command, request.Justification,
 	)})
+	m.resize()
 	m.refreshViewport()
+}
+
+func (m *appModel) beginPermissionModeSelection() {
+	selection := 0
+	current := m.toolContext.PermissionMode()
+	for index, option := range permissionModeOptions() {
+		if option.mode == current {
+			selection = index
+			break
+		}
+	}
+	m.pending = &pendingInteraction{permissions: true, selection: selection}
+	m.input.Reset()
+	m.input.Placeholder = "使用方向键选择…"
+	m.resize()
 }
 
 func (m *appModel) beginQuestion(message questionRequestMsg) {
@@ -407,23 +483,37 @@ func (m *appModel) submitInteraction(value string) (tea.Model, tea.Cmd) {
 	if answer == "" {
 		return m, nil
 	}
-	if m.pending.approval != nil {
-		switch strings.ToLower(answer) {
-		case "y", "yes", "1", "允许", "同意":
-			return m.resolveInteraction(interactionResponse{decision: tools.ApprovalAllowOnce}, "已允许本次受限操作")
-		case "n", "no", "2", "拒绝", "不同意":
-			return m.resolveInteraction(interactionResponse{decision: tools.ApprovalDeny}, "已拒绝提权请求")
-		default:
-			m.input.SetValue("")
-			m.input.Placeholder = "请输入 y 或 n…"
-			return m, nil
-		}
-	}
 	if index, err := strconv.Atoi(answer); err == nil && index >= 1 && index <= len(m.pending.question.Options) {
 		answer = m.pending.question.Options[index-1]
 	}
 	m.entries = append(m.entries, uiEntry{kind: "user", body: answer})
 	return m.resolveInteraction(interactionResponse{answer: answer}, "")
+}
+
+func (m *appModel) selectApproval() (tea.Model, tea.Cmd) {
+	options := approvalOptions()
+	selection := normalizeCommandSelection(m.pending.selection, len(options))
+	option := options[selection]
+	return m.resolveInteraction(interactionResponse{decision: option.decision}, option.status)
+}
+
+func (m *appModel) selectPermissionMode() (tea.Model, tea.Cmd) {
+	options := permissionModeOptions()
+	selection := normalizeCommandSelection(m.pending.selection, len(options))
+	mode := options[selection].mode
+	if m.toolContext.Permissions == nil {
+		m.toolContext.Permissions = permissions.NewPolicy(mode)
+	} else {
+		m.toolContext.Permissions.SetMode(mode)
+	}
+	m.runtime.PermissionMode = mode
+	m.pending = nil
+	m.input.Reset()
+	m.input.Placeholder = "给 Banka Code 发消息…"
+	m.entries = append(m.entries, uiEntry{kind: "status", body: "权限模式已切换为" + mode.Label()})
+	m.resize()
+	m.refreshViewport()
+	return m, m.input.Focus()
 }
 
 func (m *appModel) resolveInteraction(response interactionResponse, status string) (tea.Model, tea.Cmd) {
@@ -434,6 +524,7 @@ func (m *appModel) resolveInteraction(response interactionResponse, status strin
 	if status != "" {
 		m.entries = append(m.entries, uiEntry{kind: "status", body: status})
 	}
+	m.resize()
 	m.refreshViewport()
 	pending.response <- response
 	return m, waitForAgentEvent(m.agentEvents)
@@ -464,13 +555,16 @@ func (m *appModel) submit(value string) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "compact":
 			return m.startCompaction()
+		case "permissions":
+			m.beginPermissionModeSelection()
+			return m, nil
 		case "help":
 			m.entries = append(m.entries, uiEntry{kind: "assistant", body: buildBuiltinHelpBody()})
 			m.refreshViewport()
 			return m, nil
 		case "status":
-			body := fmt.Sprintf("## 当前状态\n\n- Provider：%s\n- Model：%s\n- 已注册工具：%d\n- AGENTS 指令文件：%d\n- Skills：%d\n- 当前屏幕消息数：%d\n- 当前会话消息数：%d\n- 可回滚轮数：%d",
-				providerLabel(m.runtime.Provider), m.runtime.Model, len(m.registry.List()), m.details.InstructionFiles,
+			body := fmt.Sprintf("## 当前状态\n\n- Provider：%s\n- Model：%s\n- 权限模式：%s\n- 已注册工具：%d\n- AGENTS 指令文件：%d\n- Skills：%d\n- 当前屏幕消息数：%d\n- 当前会话消息数：%d\n- 可回滚轮数：%d",
+				providerLabel(m.runtime.Provider), m.runtime.Model, m.toolContext.PermissionMode().Label(), len(m.registry.List()), m.details.InstructionFiles,
 				m.details.Skills, len(m.entries), len(m.transcript), len(m.checkpoints))
 			if len(m.details.MCP) == 0 {
 				body += "\n- MCP：未配置"
@@ -678,10 +772,12 @@ func (m *appModel) resize() {
 	contentWidth := max(16, m.width-4)
 	m.input.SetWidth(max(8, contentWidth-4))
 	panelHeight := 0
-	if commands := m.visibleCommandSuggestions(); !m.busy && strings.HasPrefix(strings.TrimSpace(m.input.Value()), "/") {
+	if panel := m.selectionPanelView(contentWidth); panel != "" {
+		panelHeight = lipgloss.Height(panel)
+	} else if commands := m.visibleCommandSuggestions(); !m.busy && strings.HasPrefix(strings.TrimSpace(m.input.Value()), "/") {
 		panelHeight = max(1, len(commands)) + 2
 	}
-	viewportHeight := max(1, m.height-3-4-panelHeight)
+	viewportHeight := max(1, m.height-8-panelHeight)
 	m.viewport.SetWidth(contentWidth)
 	m.viewport.SetHeight(viewportHeight)
 }
@@ -742,7 +838,9 @@ func (m *appModel) View() tea.View {
 	header := lipgloss.NewStyle().Width(contentWidth).Align(lipgloss.Center).Render(m.logoView())
 	divider := lipgloss.NewStyle().Foreground(lipgloss.Color(tuiColors.divider)).Render(horizontalRule(contentWidth, "─"))
 	parts := []string{header, divider, m.viewport.View()}
-	if panel := m.commandPanelView(contentWidth); panel != "" {
+	if panel := m.selectionPanelView(contentWidth); panel != "" {
+		parts = append(parts, panel)
+	} else if panel := m.commandPanelView(contentWidth); panel != "" {
 		parts = append(parts, panel)
 	}
 	parts = append(parts, m.inputView(contentWidth), m.statusView(contentWidth))
@@ -773,7 +871,7 @@ func (m *appModel) logoView() string {
 }
 
 func (m *appModel) commandPanelView(width int) string {
-	if m.busy || !strings.HasPrefix(strings.TrimSpace(m.input.Value()), "/") {
+	if m.pending != nil || m.busy || !strings.HasPrefix(strings.TrimSpace(m.input.Value()), "/") {
 		return ""
 	}
 	commands := m.visibleCommandSuggestions()
@@ -794,12 +892,44 @@ func (m *appModel) commandPanelView(width int) string {
 	return lipgloss.NewStyle().Width(width - 2).Border(lipgloss.NormalBorder()).BorderForeground(lipgloss.Color(tuiColors.border)).PaddingLeft(1).Render(strings.Join(lines, "\n"))
 }
 
+func (m *appModel) selectionPanelView(width int) string {
+	if m.pending == nil || (m.pending.approval == nil && !m.pending.permissions) {
+		return ""
+	}
+	labels := make([]string, 0, 3)
+	if m.pending.permissions {
+		for _, option := range permissionModeOptions() {
+			labels = append(labels, option.label)
+		}
+	} else {
+		for _, option := range approvalOptions() {
+			labels = append(labels, option.label)
+		}
+	}
+	selected := normalizeCommandSelection(m.pending.selection, len(labels))
+	lines := make([]string, 0, len(labels))
+	for index, label := range labels {
+		marker := "  "
+		style := lipgloss.NewStyle().Foreground(lipgloss.Color(tuiColors.hint)).MaxWidth(max(4, width-6))
+		if index == selected {
+			marker = "› "
+			style = style.Foreground(lipgloss.Color(tuiColors.shimmer)).Bold(true)
+		}
+		lines = append(lines, style.Render(marker+label))
+	}
+	return lipgloss.NewStyle().Width(width - 2).Border(lipgloss.NormalBorder()).BorderForeground(lipgloss.Color(tuiColors.warning)).PaddingLeft(1).Render(strings.Join(lines, "\n"))
+}
+
 func (m *appModel) inputView(width int) string {
 	marker := lipgloss.NewStyle().Foreground(lipgloss.Color(tuiColors.shimmer)).Bold(true).Render("◈ ")
 	if m.busy {
 		marker = lipgloss.NewStyle().Foreground(lipgloss.Color(tuiColors.status)).Render("◇ ")
 	}
-	return lipgloss.NewStyle().Width(width - 2).Border(lipgloss.NormalBorder()).BorderForeground(lipgloss.Color(tuiColors.border)).PaddingLeft(1).Render(marker + m.input.View())
+	content := marker + m.input.View()
+	if m.pending != nil && (m.pending.approval != nil || m.pending.permissions) {
+		content = marker + "↑↓ · Enter · Esc"
+	}
+	return lipgloss.NewStyle().Width(width - 2).Border(lipgloss.NormalBorder()).BorderForeground(lipgloss.Color(tuiColors.border)).PaddingLeft(1).Render(content)
 }
 
 func (m *appModel) statusView(width int) string {
@@ -807,7 +937,7 @@ func (m *appModel) statusView(width int) string {
 	if m.busy {
 		left = statusMarquee(m.animationTick) + " " + lipgloss.NewStyle().Foreground(lipgloss.Color(tuiColors.hint)).Render("按 ESC 中断")
 	}
-	right := lipgloss.NewStyle().Foreground(lipgloss.Color(tuiColors.hint)).Faint(true).Render(providerLabel(m.runtime.Provider) + " · " + m.runtime.Model)
+	right := lipgloss.NewStyle().Foreground(lipgloss.Color(tuiColors.hint)).Faint(true).Render(providerLabel(m.runtime.Provider) + " · " + m.runtime.Model + " · " + m.toolContext.PermissionMode().Label())
 	space := max(1, width-lipgloss.Width(left)-lipgloss.Width(right))
 	return left + strings.Repeat(" ", space) + right
 }

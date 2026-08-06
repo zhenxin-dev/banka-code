@@ -55,24 +55,22 @@ func (bashTool) Execute(parent context.Context, arguments map[string]any, toolCo
 		return Result{}, err
 	}
 
-	if permissions == sandboxPermissionEscalated {
+	fullAccess := toolContext.PermissionMode().HasFullAccess()
+	if permissions == sandboxPermissionEscalated && !fullAccess {
 		justification, justificationErr := requireString(arguments, "justification")
 		if justificationErr != nil {
 			return Result{}, fmt.Errorf("Bash tool requires a non-empty 'justification' with require_escalated.")
 		}
-		if toolContext.Interaction == nil {
-			return Result{Content: "Elevated execution requires interactive user approval.", IsError: true}, nil
-		}
-		decision, approvalErr := toolContext.Interaction.RequestApproval(parent, ApprovalRequest{
-			ToolName: "Bash", Command: command, Justification: justification,
+		allowed, approvalErr := toolContext.RequestPermission(parent, ApprovalRequest{
+			ToolName: "Bash", Kind: ApprovalHost, Scope: "bash:host", Command: command, Justification: justification,
 		})
 		if approvalErr != nil {
 			return Result{}, approvalErr
 		}
-		if decision != ApprovalAllowOnce {
+		if !allowed {
 			return Result{Content: "User denied elevated execution.", IsError: true}, nil
 		}
-	} else {
+	} else if !fullAccess {
 		if validationError := validateCommand(command, toolContext.WorkspaceRoot); validationError != "" {
 			return Result{Content: validationError, IsError: true}, nil
 		}
@@ -81,7 +79,7 @@ func (bashTool) Execute(parent context.Context, arguments map[string]any, toolCo
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	var cmd *exec.Cmd
-	if permissions == sandboxPermissionEscalated {
+	if permissions == sandboxPermissionEscalated || fullAccess {
 		cmd = newDirectShellCommand(ctx, command)
 	} else {
 		cmd = newShellCommand(ctx, command, toolContext.WorkspaceRoot)

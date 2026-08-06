@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/zhenxin-dev/banka-code/internal/permissions"
 )
 
 // ProviderKind is the configured model provider.
@@ -23,11 +25,12 @@ const (
 
 // RuntimeConfig is the environment-derived configuration.
 type RuntimeConfig struct {
-	WorkspaceRoot string
-	Provider      ProviderKind
-	Model         string
-	APIKey        string
-	BaseURL       string
+	WorkspaceRoot  string
+	Provider       ProviderKind
+	Model          string
+	APIKey         string
+	BaseURL        string
+	PermissionMode permissions.Mode
 }
 
 // Load reads .env and process environment, then validates required settings.
@@ -46,12 +49,18 @@ func Load(workspaceRoot string) (RuntimeConfig, error) {
 		return RuntimeConfig{}, errors.New("缺少 BANKA_API_KEY 配置。请设置 BANKA_API_KEY 环境变量。")
 	}
 
+	permissionMode, err := permissions.ParseMode(os.Getenv("BANKA_PERMISSION_MODE"))
+	if err != nil {
+		return RuntimeConfig{}, err
+	}
+
 	return RuntimeConfig{
-		WorkspaceRoot: workspaceRoot,
-		Provider:      parseProviderKind(os.Getenv("BANKA_PROVIDER")),
-		Model:         model,
-		APIKey:        apiKey,
-		BaseURL:       strings.TrimSpace(os.Getenv("BANKA_BASE_URL")),
+		WorkspaceRoot:  workspaceRoot,
+		Provider:       parseProviderKind(os.Getenv("BANKA_PROVIDER")),
+		Model:          model,
+		APIKey:         apiKey,
+		BaseURL:        strings.TrimSpace(os.Getenv("BANKA_BASE_URL")),
+		PermissionMode: permissionMode,
 	}, nil
 }
 

@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/zhenxin-dev/banka-code/internal/permissions"
 )
 
 func TestLoadRuntimeConfig(t *testing.T) {
@@ -12,12 +14,13 @@ func TestLoadRuntimeConfig(t *testing.T) {
 	t.Setenv("BANKA_API_KEY", "sk-test")
 	t.Setenv("BANKA_BASE_URL", "https://example.com/v1")
 	t.Setenv("BANKA_MODEL", "claude-test")
+	t.Setenv("BANKA_PERMISSION_MODE", "full-access")
 
 	config, err := Load("/workspace")
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
-	if config.WorkspaceRoot != "/workspace" || config.Provider != ProviderAnthropic || config.APIKey != "sk-test" || config.BaseURL != "https://example.com/v1" || config.Model != "claude-test" {
+	if config.WorkspaceRoot != "/workspace" || config.Provider != ProviderAnthropic || config.APIKey != "sk-test" || config.BaseURL != "https://example.com/v1" || config.Model != "claude-test" || config.PermissionMode != permissions.ModeFullAccess {
 		t.Fatalf("unexpected config: %#v", config)
 	}
 }
@@ -51,6 +54,16 @@ func TestLoadRequiresModelAndAPIKey(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsUnknownPermissionMode(t *testing.T) {
+	withCleanBankaEnv(t)
+	t.Setenv("BANKA_API_KEY", "key")
+	t.Setenv("BANKA_MODEL", "model")
+	t.Setenv("BANKA_PERMISSION_MODE", "unsafe-ish")
+	if _, err := Load(t.TempDir()); err == nil {
+		t.Fatal("Load accepted an unknown permission mode")
+	}
+}
+
 func TestLoadReadsDotEnvWithoutOverridingProcessEnvironment(t *testing.T) {
 	withCleanBankaEnv(t)
 	root := t.TempDir()
@@ -71,7 +84,7 @@ func TestLoadReadsDotEnvWithoutOverridingProcessEnvironment(t *testing.T) {
 
 func withCleanBankaEnv(t *testing.T) {
 	t.Helper()
-	keys := []string{"BANKA_PROVIDER", "BANKA_API_KEY", "BANKA_BASE_URL", "BANKA_MODEL"}
+	keys := []string{"BANKA_PROVIDER", "BANKA_API_KEY", "BANKA_BASE_URL", "BANKA_MODEL", "BANKA_PERMISSION_MODE"}
 	for _, key := range keys {
 		value, exists := os.LookupEnv(key)
 		if err := os.Unsetenv(key); err != nil {

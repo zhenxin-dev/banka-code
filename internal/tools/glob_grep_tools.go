@@ -28,12 +28,12 @@ func NewGrepTool() Definition { return grepTool{} }
 
 func (globTool) Name() string { return "Glob" }
 func (globTool) Description() string {
-	return "Find files by glob pattern inside the current workspace."
+	return "Find files by glob pattern within paths permitted by the current access mode."
 }
 func (globTool) InputSchema() JSONSchema {
 	return objectSchema(map[string]any{
 		"pattern": stringSchema("Glob pattern to match files, such as '**/*.ts'."),
-		"path":    stringSchema("Directory to search in, relative to the workspace root. Defaults to workspace root."),
+		"path":    stringSchema("Directory to search. Outside-workspace paths require full-access or YOLO mode."),
 	}, "pattern")
 }
 func (globTool) Execute(_ context.Context, arguments map[string]any, toolContext Context) (Result, error) {
@@ -47,7 +47,7 @@ func (globTool) Execute(_ context.Context, arguments map[string]any, toolContext
 		return Result{}, fmt.Errorf("Glob tool requires 'path' to be a non-empty string when provided.")
 	}
 	if hasPath {
-		searchRoot, err = ResolveSafePath(toolContext.WorkspaceRoot, pathValue)
+		searchRoot, err = toolContext.ResolvePath(pathValue)
 		if err != nil {
 			return Result{}, err
 		}
@@ -76,12 +76,12 @@ func (globTool) Execute(_ context.Context, arguments map[string]any, toolContext
 
 func (grepTool) Name() string { return "Grep" }
 func (grepTool) Description() string {
-	return "Search file contents by regular expression inside the current workspace."
+	return "Search file contents within paths permitted by the current access mode."
 }
 func (grepTool) InputSchema() JSONSchema {
 	return objectSchema(map[string]any{
 		"pattern": stringSchema("Regular expression pattern to search for."),
-		"path":    stringSchema("Directory or file to search in, relative to the workspace root. Defaults to workspace root."),
+		"path":    stringSchema("Directory or file to search. Outside-workspace paths require full-access or YOLO mode."),
 		"include": stringSchema("Glob pattern used to filter searched files, such as '*.ts'. Defaults to '**/*'."),
 		"outputMode": JSONSchema{
 			"type": "string", "description": "Output mode. Defaults to 'content'.",
@@ -120,7 +120,7 @@ func (grepTool) Execute(_ context.Context, arguments map[string]any, toolContext
 		return Result{}, fmt.Errorf("Grep tool requires 'path' to be a non-empty string when provided.")
 	}
 	if hasPath {
-		searchRoot, err = ResolveSafePath(toolContext.WorkspaceRoot, pathValue)
+		searchRoot, err = toolContext.ResolvePath(pathValue)
 		if err != nil {
 			return Result{}, err
 		}

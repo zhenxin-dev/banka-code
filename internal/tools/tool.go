@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 
 	"github.com/zhenxin-dev/banka-code/internal/messages"
+	"github.com/zhenxin-dev/banka-code/internal/permissions"
 )
 
 // JSONSchema is a JSON Schema document used to describe tool input.
@@ -20,13 +22,29 @@ type ApprovalDecision string
 const (
 	// ApprovalAllowOnce permits only the current tool call.
 	ApprovalAllowOnce ApprovalDecision = "allow_once"
+	// ApprovalAllowAlways permits matching requests for the current session.
+	ApprovalAllowAlways ApprovalDecision = "allow_always"
 	// ApprovalDeny rejects the current tool call.
 	ApprovalDeny ApprovalDecision = "deny"
+)
+
+// ApprovalKind identifies the boundary a request needs to cross.
+type ApprovalKind string
+
+const (
+	// ApprovalHost covers host execution and local filesystem access.
+	ApprovalHost ApprovalKind = "host"
+	// ApprovalNetwork covers direct network access.
+	ApprovalNetwork ApprovalKind = "network"
+	// ApprovalExternal covers calls to untrusted external tool providers.
+	ApprovalExternal ApprovalKind = "external"
 )
 
 // ApprovalRequest describes a tool call that cannot run in the default sandbox.
 type ApprovalRequest struct {
 	ToolName      string
+	Kind          ApprovalKind
+	Scope         string
 	Command       string
 	Justification string
 }
@@ -47,6 +65,51 @@ type Interaction interface {
 type Context struct {
 	WorkspaceRoot string
 	Interaction   Interaction
+	Permissions   *permissions.Policy
+}
+
+// PermissionMode returns the active permission mode.
+func (c Context) PermissionMode() permissions.Mode {
+	if c.Permissions == nil {
+		return permissions.ModeDefault
+	}
+	return c.Permissions.Mode()
+}
+
+// ResolvePath resolves a tool path according to the active permission mode.
+func (c Context) ResolvePath(targetPath string) (string, error) {
+	if !c.PermissionMode().HasFullAccess() {
+		return ResolveSafePath(c.WorkspaceRoot, targetPath)
+	}
+	candidate := targetPath
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Join(c.WorkspaceRoot, candidate)
+	}
+	return filepath.Abs(candidate)
+}
+
+// RequestPermission applies automatic and remembered approvals before prompting.
+func (c Context) RequestPermission(ctx context.Context, request ApprovalRequest) (bool, error) {
+	mode := c.PermissionMode()
+	scope := request.Scope
+	if scope == "" {
+		scope = request.ToolName
+	}
+	if mode == permissions.ModeYOLO || (mode == permissions.ModeFullAccess && request.Kind != ApprovalExternal) ||
+		(c.Permissions != nil && c.Permissions.Allows(scope)) {
+		return true, nil
+	}
+	if c.Interaction == nil {
+		return false, nil
+	}
+	decision, err := c.Interaction.RequestApproval(ctx, request)
+	if err != nil {
+		return false, err
+	}
+	if decision == ApprovalAllowAlways {
+		c.Permissions.Allow(scope)
+	}
+	return decision == ApprovalAllowOnce || decision == ApprovalAllowAlways, nil
 }
 
 // Result is a tool execution result.
