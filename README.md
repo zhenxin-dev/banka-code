@@ -11,6 +11,7 @@
 - **Go** — 标准库优先、原生二进制、部署简单
 - **Agent 循环** — 多轮对话、工具调用，自动迭代直到任务完成
 - **流式 TUI** — Markdown 渲染、命令面板、状态动画、ESC 中断和多轮会话
+- **多语言回复** — 自动跟随用户语言，首期支持中文、英文和日文
 - **双模式** — 全屏 TUI & CLI 单次执行模式
 - **多 Provider** — 支持 OpenAI Responses、OpenAI Chat Completions 兼容接口和 Anthropic Messages API
 - **完整工具面** — 文件读写、搜索、补丁、命令、网页读取、用户提问和按需技能
