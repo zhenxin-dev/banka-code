@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/zhenxin-dev/banka-code/internal/agent"
 	"github.com/zhenxin-dev/banka-code/internal/config"
 	"github.com/zhenxin-dev/banka-code/internal/messages"
@@ -252,5 +253,147 @@ func TestManagedCommandsUseRuntimeHandler(t *testing.T) {
 	model.submit("/mcp tools")
 	if len(model.entries) != 1 || model.entries[0].body != "mcp tools" {
 		t.Fatalf("MCP command output was not shown: %#v", model.entries)
+	}
+}
+
+func TestCtrlOTogglesToolDetails(t *testing.T) {
+	model := newAppModel(context.Background(), "0.1.0", config.RuntimeConfig{}, nil, tools.NewRegistry(nil), tools.Context{})
+	model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model.entries = []uiEntry{
+		{kind: "tool", body: "Read · README.md", detail: "{\"path\":\"README.md\"}", toolState: "success"},
+		{kind: "assistant", body: "结果"},
+	}
+	model.refreshViewport()
+	if !strings.Contains(model.viewport.View(), "README.md") {
+		t.Fatal("tool activity should be visible by default")
+	}
+	if strings.Contains(model.viewport.View(), `{"path":"README.md"}`) {
+		t.Fatal("tool details should be collapsed by default")
+	}
+	model.handleKey(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
+	if !model.expandToolOutput || !strings.Contains(model.viewport.View(), `{"path":"README.md"}`) {
+		t.Fatalf("Ctrl+O did not expand tool details: expanded=%v view=%q", model.expandToolOutput, model.viewport.View())
+	}
+	model.handleKey(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
+	if model.expandToolOutput || !strings.Contains(model.viewport.View(), "README.md") || strings.Contains(model.viewport.View(), `{"path":"README.md"}`) {
+		t.Fatalf("Ctrl+O did not collapse tool details: expanded=%v view=%q", model.expandToolOutput, model.viewport.View())
+	}
+}
+
+func TestPromptHistoryNavigation(t *testing.T) {
+	model := newAppModel(context.Background(), "0.1.0", config.RuntimeConfig{}, nil, tools.NewRegistry(nil), tools.Context{})
+	model.submit("/help")
+	model.submit("/status")
+	if len(model.history) != 2 {
+		t.Fatalf("unexpected history: %#v", model.history)
+	}
+	model.handleKey(tea.KeyPressMsg{Code: tea.KeyUp})
+	if model.input.Value() != "/status" {
+		t.Fatalf("up did not restore latest prompt: %q", model.input.Value())
+	}
+	model.handleKey(tea.KeyPressMsg{Code: tea.KeyUp})
+	if model.input.Value() != "/help" {
+		t.Fatalf("second up did not restore older prompt: %q", model.input.Value())
+	}
+	model.handleKey(tea.KeyPressMsg{Code: tea.KeyDown})
+	if model.input.Value() != "/status" {
+		t.Fatalf("down did not move forward in history: %q", model.input.Value())
+	}
+	model.handleKey(tea.KeyPressMsg{Code: tea.KeyDown})
+	if model.input.Value() != "" || model.historyIndex != -1 {
+		t.Fatalf("down at newest did not clear draft: value=%q index=%d", model.input.Value(), model.historyIndex)
+	}
+}
+
+func TestQuestionOptionNavigation(t *testing.T) {
+	model := newAppModel(context.Background(), "0.1.0", config.RuntimeConfig{}, nil, tools.NewRegistry(nil), tools.Context{})
+	response := make(chan interactionResponse, 1)
+	model.beginQuestion(questionRequestMsg{
+		request:  tools.QuestionRequest{Question: "选择方案", Options: []string{"A", "B", "C"}},
+		response: response,
+	})
+	model.handleInteractionKey(tea.KeyPressMsg{Code: tea.KeyDown})
+	model.handleInteractionKey(tea.KeyPressMsg{Code: tea.KeyEnter})
+	result := <-response
+	if result.answer != "B" || model.pending != nil {
+		t.Fatalf("question navigation selected wrong option: result=%#v pending=%#v", result, model.pending)
+	}
+}
+
+func TestQuestionOptionsAllowFreeformAnswer(t *testing.T) {
+	model := newAppModel(context.Background(), "0.1.0", config.RuntimeConfig{}, nil, tools.NewRegistry(nil), tools.Context{})
+	response := make(chan interactionResponse, 1)
+	model.beginQuestion(questionRequestMsg{
+		request:  tools.QuestionRequest{Question: "补充说明", Options: []string{"继续", "停止"}},
+		response: response,
+	})
+	model.input.SetValue("需要人工确认")
+	model.handleInteractionKey(tea.KeyPressMsg{Code: tea.KeyEnter})
+	result := <-response
+	if result.answer != "需要人工确认" || model.pending != nil {
+		t.Fatalf("freeform question answer was not submitted: result=%#v pending=%#v", result, model.pending)
+	}
+}
+
+func TestEscapeCancelsQuestionWithOptions(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	model := newAppModel(ctx, "0.1.0", config.RuntimeConfig{}, nil, tools.NewRegistry(nil), tools.Context{})
+	model.busy = true
+	model.cancel = cancel
+	response := make(chan interactionResponse, 1)
+	model.beginQuestion(questionRequestMsg{
+		request:  tools.QuestionRequest{Question: "继续？", Options: []string{"是", "否"}},
+		response: response,
+	})
+	_, command := model.handleInteractionKey(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if command == nil || model.pending != nil || ctx.Err() == nil {
+		t.Fatalf("question with options was not canceled: pending=%#v err=%v", model.pending, ctx.Err())
+	}
+}
+
+func TestToolResultMatchesCallIDAndName(t *testing.T) {
+	model := newAppModel(context.Background(), "0.1.0", config.RuntimeConfig{}, nil, tools.NewRegistry(nil), tools.Context{})
+	model.entries = []uiEntry{
+		{kind: "tool", body: "custom tool · first", toolID: "one", toolNameValue: "custom_tool", toolState: "running"},
+		{kind: "tool", body: "custom tool · second", toolID: "two", toolNameValue: "custom_tool", toolState: "running"},
+	}
+	model.markToolResult(messages.NewToolMessage("one", "custom_tool", "first result", false))
+	if model.entries[0].toolState != "success" || model.entries[1].toolState != "running" {
+		t.Fatalf("tool ID matching updated the wrong entry: %#v", model.entries)
+	}
+	model.markToolResult(messages.NewToolMessage("", "custom_tool", "second result", true))
+	if model.entries[1].toolState != "error" || model.entries[1].detail != "second result" {
+		t.Fatalf("tool name fallback did not update running entry: %#v", model.entries)
+	}
+}
+
+func TestShortTerminalKeepsComposerAndFooter(t *testing.T) {
+	model := newAppModel(context.Background(), "0.1.0", config.RuntimeConfig{Model: "model"}, nil, tools.NewRegistry(nil), tools.Context{})
+	model.Update(tea.WindowSizeMsg{Width: 40, Height: 4})
+	view := model.View().Content
+	plainView := ansi.Strip(view)
+	if !strings.Contains(plainView, "OpenAI") || !strings.Contains(plainView, "给 Banka") {
+		t.Fatalf("short view lost composer/footer: %q", view)
+	}
+	if lipgloss.Height(view) > 4 {
+		t.Fatalf("short view exceeds height: %d", lipgloss.Height(view))
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if width := lipgloss.Width(line); width > 40 {
+			t.Fatalf("short view line exceeds width: %d (%q)", width, line)
+		}
+	}
+}
+
+func TestViewportMouseCoordinatesFollowTranscriptLayout(t *testing.T) {
+	model := newAppModel(context.Background(), "0.1.0", config.RuntimeConfig{}, nil, tools.NewRegistry(nil), tools.Context{})
+	model.entries = []uiEntry{{kind: "assistant", body: "内容"}}
+	model.resize()
+	if position, ok := model.viewportPosition(1, 0); !ok || position.x != 0 || position.y != 0 {
+		t.Fatalf("first transcript cell mapped incorrectly: position=%#v ok=%v", position, ok)
+	}
+	if _, ok := model.viewportPosition(0, 0); ok {
+		t.Fatal("left outer padding should not be selectable")
 	}
 }

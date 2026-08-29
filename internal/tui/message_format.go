@@ -101,6 +101,12 @@ func buildBuiltinHelpBody() string {
 	for _, command := range builtinCommands {
 		lines = append(lines, fmt.Sprintf("- `%s`：%s", command.Command, command.Description))
 	}
+	lines = append(lines, "", "## 快捷键", "")
+	lines = append(lines,
+		"- `Ctrl+O`：展开/收起工具活动详情",
+		"- `↑` / `↓`：浏览提示历史或移动当前选项",
+		"- `Tab`：补全命令；`Enter`：发送/确认；`Esc`：中断/取消",
+	)
 	return strings.Join(lines, "\n")
 }
 

@@ -37,8 +37,12 @@ var tuiColors = struct {
 }
 
 type uiEntry struct {
-	kind string
-	body string
+	kind          string
+	body          string
+	detail        string
+	toolID        string
+	toolNameValue string
+	toolState     string
 }
 
 // RuntimeDetails contains discovered capabilities shown by /status.
@@ -200,6 +204,11 @@ type appModel struct {
 	selectionMoved   bool
 	pending          *pendingInteraction
 	checkpoints      []turnCheckpoint
+	expandToolOutput bool
+	history          []string
+	historyIndex     int
+	gitBranch        string
+	gitDirty         bool
 }
 
 // Run starts the full-screen terminal mode.
@@ -236,11 +245,14 @@ func newAppModel(ctx context.Context, version string, runtimeConfig config.Runti
 	if toolContext.Permissions == nil {
 		toolContext.Permissions = permissions.NewPolicy(runtimeConfig.PermissionMode)
 	}
+	gitBranch, gitDirty := detectGitState(runtimeConfig.WorkspaceRoot)
 	return &appModel{
 		ctx: ctx, runtime: runtimeConfig, client: client, registry: registry, toolContext: toolContext, version: version,
 		systemPrompt: prompt.DefaultSystemPrompt,
 		input:        input, viewport: view, width: 80, height: 24, streamingEntry: -1,
-		agentEvents: events,
+		agentEvents: events, historyIndex: -1,
+		gitBranch: gitBranch,
+		gitDirty:  gitDirty,
 	}
 }
 
@@ -251,8 +263,11 @@ func (m *appModel) Init() tea.Cmd {
 func (m *appModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch message := message.(type) {
 	case tea.WindowSizeMsg:
-		m.width = max(20, message.Width)
-		m.height = max(8, message.Height)
+		// Keep the reported terminal size intact.  Rendering helpers apply their
+		// own safe minimums, while the final view is clipped to these dimensions;
+		// this matters when Banka is opened in a narrow split pane or over SSH.
+		m.width = max(1, message.Width)
+		m.height = max(1, message.Height)
 		m.resize()
 		m.refreshViewport()
 		return m, nil
@@ -261,6 +276,7 @@ func (m *appModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, animationTick()
 	case hitokotoMsg:
 		m.hitokoto = string(message)
+		m.resize()
 		return m, nil
 	case agentTextDeltaMsg:
 		if m.streamingEntry >= 0 && m.streamingEntry < len(m.entries) {
@@ -274,10 +290,15 @@ func (m *appModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, waitForAgentEvent(m.agentEvents)
 	case agentToolResultMsg:
 		result := messages.Message(message)
+		m.markToolResult(result)
 		if result.IsError {
-			m.entries = append(m.entries, uiEntry{kind: "error", body: result.ToolName + ": " + result.Content})
-			m.refreshViewport()
+			body := result.Content
+			if strings.TrimSpace(result.ToolName) != "" {
+				body = result.ToolName + ": " + body
+			}
+			m.entries = append(m.entries, uiEntry{kind: "error", body: body})
 		}
+		m.refreshViewport()
 		return m, waitForAgentEvent(m.agentEvents)
 	case approvalRequestMsg:
 		m.beginApproval(message)
@@ -337,6 +358,7 @@ func (m *appModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			var command tea.Cmd
 			m.input, command = m.input.Update(message)
 			m.commandSelection = 0
+			m.historyIndex = -1
 			m.resize()
 			return m, command
 		}
@@ -355,6 +377,14 @@ func (m *appModel) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Quit
 	}
+	if keyName == "ctrl+o" {
+		// Match OMP's transcript behavior: keep the compact tool summary in
+		// place and toggle only its detailed output. This remains useful while
+		// an approval/question panel has focus as well.
+		m.expandToolOutput = !m.expandToolOutput
+		m.refreshViewport()
+		return m, nil
+	}
 	if m.pending != nil {
 		return m.handleInteractionKey(key)
 	}
@@ -363,6 +393,20 @@ func (m *appModel) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.cancel()
 		}
 		return m, nil
+	}
+	// Once history browsing has started, keep the arrow keys in the history
+	// ring even if the restored value happens to begin with '/'. Typing any
+	// other character below exits history mode and returns arrows to the
+	// command panel/text cursor.
+	if (keyName == "up" || keyName == "down") && m.historyIndex >= 0 && m.historyIndex < len(m.history) && m.input.Value() == m.history[m.historyIndex] {
+		direction := -1
+		if keyName == "down" {
+			direction = 1
+		}
+		if m.restoreHistory(direction) {
+			m.resize()
+			return m, nil
+		}
 	}
 
 	suggestions := m.visibleCommandSuggestions()
@@ -378,6 +422,7 @@ func (m *appModel) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.commandSelection = normalizeCommandSelection(m.commandSelection, len(suggestions))
 			m.input.SetValue(suggestions[m.commandSelection].Command)
 			m.input.CursorEnd()
+			m.historyIndex = -1
 			m.commandSelection = 0
 			m.resize()
 			return m, nil
@@ -396,20 +441,36 @@ func (m *appModel) handleKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "pgdown":
 		m.viewport.PageDown()
 		return m, nil
+	case "up":
+		if m.restoreHistory(-1) {
+			m.resize()
+			return m, nil
+		}
+	case "down":
+		if m.restoreHistory(1) {
+			m.resize()
+			return m, nil
+		}
 	}
 
 	var command tea.Cmd
 	m.input, command = m.input.Update(key)
+	m.historyIndex = -1
 	m.commandSelection = 0
 	m.resize()
 	return m, command
 }
 
 func (m *appModel) handleInteractionKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	if m.pending.approval != nil || m.pending.permissions {
+	if m.pending == nil {
+		return m, nil
+	}
+	if m.pending.approval != nil || m.pending.permissions || (m.pending.question != nil && len(m.pending.question.Options) > 0) {
 		count := len(approvalOptions())
 		if m.pending.permissions {
 			count = len(permissionModeOptions())
+		} else if m.pending.question != nil {
+			count = len(m.pending.question.Options)
 		}
 		switch key.String() {
 		case "up":
@@ -424,6 +485,12 @@ func (m *appModel) handleInteractionKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd
 			if m.pending.permissions {
 				return m.selectPermissionMode()
 			}
+			if m.pending.question != nil {
+				if strings.TrimSpace(m.input.Value()) != "" {
+					return m.submitInteraction(m.input.Value())
+				}
+				return m.selectQuestionOption()
+			}
 			return m.selectApproval()
 		case "esc":
 			if m.pending.permissions {
@@ -432,19 +499,16 @@ func (m *appModel) handleInteractionKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd
 				m.resize()
 				return m, m.input.Focus()
 			}
+			if m.pending.question != nil {
+				return m.cancelPendingQuestion()
+			}
 			return m.resolveInteraction(interactionResponse{decision: tools.ApprovalDeny}, "已拒绝提权请求")
 		}
 		return m, nil
 	}
 	switch key.String() {
 	case "esc":
-		m.pending = nil
-		m.input.Reset()
-		m.input.Placeholder = "等待中…"
-		if m.cancel != nil {
-			m.cancel()
-		}
-		return m, waitForAgentEvent(m.agentEvents)
+		return m.cancelPendingQuestion()
 	case "enter":
 		return m.submitInteraction(m.input.Value())
 	}
@@ -452,6 +516,18 @@ func (m *appModel) handleInteractionKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd
 	m.input, command = m.input.Update(key)
 	m.resize()
 	return m, command
+}
+
+func (m *appModel) cancelPendingQuestion() (tea.Model, tea.Cmd) {
+	m.pending = nil
+	m.input.Reset()
+	m.input.Placeholder = "等待中…"
+	if m.cancel != nil {
+		m.cancel()
+	}
+	m.resize()
+	m.refreshViewport()
+	return m, waitForAgentEvent(m.agentEvents)
 }
 
 func (m *appModel) beginApproval(message approvalRequestMsg) {
@@ -483,7 +559,7 @@ func (m *appModel) beginPermissionModeSelection() {
 
 func (m *appModel) beginQuestion(message questionRequestMsg) {
 	request := message.request
-	m.pending = &pendingInteraction{question: &request, response: message.response}
+	m.pending = &pendingInteraction{question: &request, response: message.response, selection: 0}
 	m.input.Reset()
 	m.input.Placeholder = "输入回答…"
 	body := request.Question
@@ -491,29 +567,55 @@ func (m *appModel) beginQuestion(message questionRequestMsg) {
 		body += fmt.Sprintf("\n\n%d. %s", index+1, option)
 	}
 	m.entries = append(m.entries, uiEntry{kind: "question", body: body})
+	m.resize()
 	m.refreshViewport()
 }
 
 func (m *appModel) submitInteraction(value string) (tea.Model, tea.Cmd) {
-	answer := strings.TrimSpace(value)
-	if answer == "" {
+	if m.pending == nil {
 		return m, nil
 	}
-	if index, err := strconv.Atoi(answer); err == nil && index >= 1 && index <= len(m.pending.question.Options) {
-		answer = m.pending.question.Options[index-1]
+	answer := strings.TrimSpace(value)
+	if answer == "" {
+		if m.pending != nil && m.pending.question != nil && len(m.pending.question.Options) > 0 {
+			return m.selectQuestionOption()
+		}
+		return m, nil
+	}
+	if m.pending != nil && m.pending.question != nil {
+		if index, err := strconv.Atoi(answer); err == nil && index >= 1 && index <= len(m.pending.question.Options) {
+			answer = m.pending.question.Options[index-1]
+		}
 	}
 	m.entries = append(m.entries, uiEntry{kind: "user", body: answer})
 	return m.resolveInteraction(interactionResponse{answer: answer}, "")
 }
 
 func (m *appModel) selectApproval() (tea.Model, tea.Cmd) {
+	if m.pending == nil || m.pending.approval == nil {
+		return m, nil
+	}
 	options := approvalOptions()
 	selection := normalizeCommandSelection(m.pending.selection, len(options))
 	option := options[selection]
 	return m.resolveInteraction(interactionResponse{decision: option.decision}, option.status)
 }
 
+func (m *appModel) selectQuestionOption() (tea.Model, tea.Cmd) {
+	if m.pending == nil || m.pending.question == nil || len(m.pending.question.Options) == 0 {
+		return m, nil
+	}
+	options := m.pending.question.Options
+	selection := normalizeCommandSelection(m.pending.selection, len(options))
+	answer := options[selection]
+	m.entries = append(m.entries, uiEntry{kind: "user", body: answer})
+	return m.resolveInteraction(interactionResponse{answer: answer}, "")
+}
+
 func (m *appModel) selectPermissionMode() (tea.Model, tea.Cmd) {
+	if m.pending == nil || !m.pending.permissions {
+		return m, nil
+	}
 	options := permissionModeOptions()
 	selection := normalizeCommandSelection(m.pending.selection, len(options))
 	mode := options[selection].mode
@@ -534,6 +636,9 @@ func (m *appModel) selectPermissionMode() (tea.Model, tea.Cmd) {
 
 func (m *appModel) resolveInteraction(response interactionResponse, status string) (tea.Model, tea.Cmd) {
 	pending := m.pending
+	if pending == nil {
+		return m, nil
+	}
 	m.pending = nil
 	m.input.Reset()
 	m.input.Placeholder = "等待中…"
@@ -542,7 +647,9 @@ func (m *appModel) resolveInteraction(response interactionResponse, status strin
 	}
 	m.resize()
 	m.refreshViewport()
-	pending.response <- response
+	if pending.response != nil {
+		pending.response <- response
+	}
 	return m, waitForAgentEvent(m.agentEvents)
 }
 
@@ -551,6 +658,7 @@ func (m *appModel) submit(value string) (tea.Model, tea.Cmd) {
 	if userPrompt == "" {
 		return m, nil
 	}
+	m.recordHistory(userPrompt)
 	m.input.Reset()
 	m.commandSelection = 0
 	m.resize()
@@ -587,6 +695,7 @@ func (m *appModel) submit(value string) (tea.Model, tea.Cmd) {
 			m.transcript = nil
 			m.checkpoints = nil
 			m.streamingEntry = -1
+			m.expandToolOutput = false
 			m.refreshViewport()
 			return m, nil
 		case "undo":
@@ -606,8 +715,14 @@ func (m *appModel) submit(value string) (tea.Model, tea.Cmd) {
 			m.refreshViewport()
 			return m, nil
 		case "status":
+			m.refreshGitState()
+			m.resize()
+			toolCount := 0
+			if m.registry != nil {
+				toolCount = len(m.registry.List())
+			}
 			body := fmt.Sprintf("## 当前状态\n\n- Provider：%s\n- Model：%s\n- 权限模式：%s\n- 已注册工具：%d\n- AGENTS 指令文件：%d\n- Skills：%d\n- 当前屏幕消息数：%d\n- 当前会话消息数：%d\n- 可回滚轮数：%d",
-				providerLabel(m.runtime.Provider), m.runtime.Model, m.toolContext.PermissionMode().Label(), len(m.registry.List()), m.details.InstructionFiles,
+				providerLabel(m.runtime.Provider), m.runtime.Model, m.toolContext.PermissionMode().Label(), toolCount, m.details.InstructionFiles,
 				m.details.Skills, len(m.entries), len(m.transcript), len(m.checkpoints))
 			if len(m.details.MCP) == 0 {
 				body += "\n- MCP：未配置"
@@ -669,6 +784,7 @@ func (m *appModel) startAgentTurn(displayPrompt string, modelPrompt string) (tea
 	m.entries = append(m.entries, uiEntry{kind: "user", body: displayPrompt})
 	m.entries = append(m.entries, uiEntry{kind: "assistant"})
 	m.streamingEntry = len(m.entries) - 1
+	m.resize()
 	m.refreshViewport()
 
 	runContext, cancel := context.WithCancel(m.ctx)
@@ -685,6 +801,7 @@ func (m *appModel) startCompaction() (tea.Model, tea.Cmd) {
 	m.busy = true
 	m.input.Placeholder = "正在压缩上下文…"
 	m.entries = append(m.entries, uiEntry{kind: "status", body: "正在压缩较早的会话上下文…"})
+	m.resize()
 	m.refreshViewport()
 	runContext, cancel := context.WithCancel(m.ctx)
 	m.cancel = cancel
@@ -709,6 +826,7 @@ func (m *appModel) finishCompaction(message compactFinishedMsg) {
 		if !errors.Is(message.err, context.Canceled) {
 			m.entries = append(m.entries, uiEntry{kind: "error", body: message.err.Error()})
 		}
+		m.resize()
 		m.refreshViewport()
 		return
 	}
@@ -716,6 +834,7 @@ func (m *appModel) finishCompaction(message compactFinishedMsg) {
 	m.entries = append(m.entries, uiEntry{kind: "status", body: fmt.Sprintf(
 		"已将 %d 条较早消息压缩为摘要，最近两轮保留原文", message.result.CompactedMessages,
 	)})
+	m.resize()
 	m.refreshViewport()
 }
 
@@ -770,7 +889,7 @@ func waitForAgentEvent(events <-chan tea.Msg) tea.Cmd {
 }
 
 func (m *appModel) addToolCall(call messages.ToolCall) {
-	toolEntry := uiEntry{kind: "tool", body: formatToolCall(call)}
+	toolEntry := uiEntry{kind: "tool", body: formatToolCall(call), detail: call.ArgumentsJSON, toolID: call.ID, toolNameValue: call.Name, toolState: "running"}
 	if m.streamingEntry >= 0 && m.streamingEntry < len(m.entries) && m.entries[m.streamingEntry].body == "" {
 		m.entries[m.streamingEntry] = toolEntry
 	} else {
@@ -778,6 +897,45 @@ func (m *appModel) addToolCall(call messages.ToolCall) {
 	}
 	m.entries = append(m.entries, uiEntry{kind: "assistant"})
 	m.streamingEntry = len(m.entries) - 1
+}
+
+func (m *appModel) markToolResult(result messages.Message) {
+	for index := len(m.entries) - 1; index >= 0; index-- {
+		entry := &m.entries[index]
+		if entry.kind != "tool" {
+			continue
+		}
+		if result.ToolCallID != "" {
+			if entry.toolID != "" && entry.toolID != result.ToolCallID {
+				continue
+			}
+			// Older providers may omit the call ID on the UI entry. If a tool
+			// name is available, use it as a safe fallback rather than marking
+			// an unrelated call.
+			if entry.toolID == "" && result.ToolName != "" && entry.toolName() != result.ToolName {
+				continue
+			}
+		} else if result.ToolName != "" && entry.toolName() != result.ToolName {
+			continue
+		}
+		if entry.toolState != "" && entry.toolState != "running" {
+			continue
+		}
+		if result.IsError {
+			entry.toolState = "error"
+		} else {
+			entry.toolState = "success"
+		}
+		entry.detail = result.Content
+		return
+	}
+}
+
+func (entry uiEntry) toolName() string {
+	if strings.TrimSpace(entry.toolNameValue) != "" {
+		return strings.TrimSpace(entry.toolNameValue)
+	}
+	return strings.TrimSpace(strings.SplitN(entry.body, " · ", 2)[0])
 }
 
 func (m *appModel) finishTurn(message agentFinishedMsg) {
@@ -803,7 +961,18 @@ func (m *appModel) finishTurn(message agentFinishedMsg) {
 		}
 	}
 	m.streamingEntry = -1
+	m.refreshGitState()
+	m.resize()
 	m.refreshViewport()
+}
+
+func (m *appModel) refreshGitState() {
+	branch, dirty := detectGitState(m.runtime.WorkspaceRoot)
+	if branch == "" {
+		return
+	}
+	m.gitBranch = branch
+	m.gitDirty = dirty
 }
 
 func (m *appModel) removeEmptyStreamingEntry() {
@@ -820,10 +989,63 @@ func (m *appModel) visibleCommandSuggestions() []builtinCommand {
 	return commands
 }
 
+func (m *appModel) recordHistory(value string) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
+	}
+	if len(m.history) == 0 || m.history[len(m.history)-1] != value {
+		m.history = append(m.history, value)
+		if len(m.history) > 100 {
+			m.history = m.history[len(m.history)-100:]
+		}
+	}
+	m.historyIndex = -1
+}
+
+// restoreHistory moves through the local prompt history. It only takes over
+// the arrow keys when the draft is empty or already being browsed, preserving
+// the text input's normal cursor behavior for an in-progress draft.
+func (m *appModel) restoreHistory(direction int) bool {
+	if direction != -1 && direction != 1 {
+		return false
+	}
+	if len(m.history) == 0 || (m.historyIndex < 0 && strings.TrimSpace(m.input.Value()) != "") {
+		return false
+	}
+	if direction < 0 {
+		if m.historyIndex < 0 {
+			m.historyIndex = len(m.history) - 1
+		} else if m.historyIndex > 0 {
+			m.historyIndex--
+		}
+	} else {
+		if m.historyIndex < 0 {
+			return false
+		}
+		if m.historyIndex >= len(m.history)-1 {
+			m.historyIndex = -1
+			m.input.Reset()
+			return true
+		}
+		m.historyIndex++
+	}
+	if m.historyIndex >= 0 && m.historyIndex < len(m.history) {
+		m.input.SetValue(m.history[m.historyIndex])
+		m.input.CursorEnd()
+	}
+	return true
+}
+
 func (m *appModel) viewportPosition(x int, y int) (screenPosition, bool) {
-	const viewportTop = 3
-	const viewportLeft = 1
-	position := screenPosition{x: x - viewportLeft, y: y - viewportTop}
+	if m.welcomeVisible() {
+		return screenPosition{}, false
+	}
+	viewportLeft := 0
+	if m.width >= 4 {
+		viewportLeft = 1
+	}
+	position := screenPosition{x: x - viewportLeft, y: y}
 	return position, position.x >= 0 && position.x < m.viewport.Width() && position.y >= 0 && position.y < m.viewport.Height()
 }
 
@@ -855,15 +1077,21 @@ func extractVisibleSelection(view string, start screenPosition, end screenPositi
 }
 
 func (m *appModel) resize() {
-	contentWidth := max(16, m.width-4)
-	m.input.SetWidth(max(8, contentWidth-4))
+	contentWidth := m.contentWidth()
+	m.input.SetWidth(max(1, contentWidth-4))
 	panelHeight := 0
 	if panel := m.selectionPanelView(contentWidth); panel != "" {
 		panelHeight = lipgloss.Height(panel)
-	} else if commands := m.visibleCommandSuggestions(); !m.busy && strings.HasPrefix(strings.TrimSpace(m.input.Value()), "/") {
-		panelHeight = max(1, len(commands)) + 2
+	} else if panel := m.commandPanelView(contentWidth); !m.busy && panel != "" {
+		panelHeight = lipgloss.Height(panel)
 	}
-	viewportHeight := max(1, m.height-8-panelHeight)
+	composerHeight := lipgloss.Height(m.inputView(contentWidth))
+	footerHeight := lipgloss.Height(m.statusView(contentWidth))
+	welcomeHeight := 0
+	if m.welcomeVisible() {
+		welcomeHeight = lipgloss.Height(m.welcomeView(contentWidth))
+	}
+	viewportHeight := max(1, m.height-composerHeight-footerHeight-panelHeight-welcomeHeight-2)
 	m.viewport.SetWidth(contentWidth)
 	m.viewport.SetHeight(viewportHeight)
 }
@@ -883,31 +1111,31 @@ func (m *appModel) refreshViewport() {
 }
 
 func (m *appModel) renderEntry(entry uiEntry) string {
+	width := max(1, m.viewport.Width())
+	var rendered string
 	switch entry.kind {
 	case "user":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color(tuiColors.user)).PaddingLeft(2).Render("◈ " + entry.body)
+		rendered = renderUserCard(entry.body, width)
 	case "assistant":
-		if entry.body == "" {
-			return ""
-		}
-		body := renderMarkdown(entry.body, max(20, m.viewport.Width()-6))
-		return lipgloss.NewStyle().Foreground(lipgloss.Color(tuiColors.assistant)).PaddingLeft(2).Render("❀ " + body)
+		rendered = renderAssistantBlock(entry.body, width, m.busy, m.animationTick)
 	case "tool":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color(tuiColors.tool)).Faint(true).PaddingLeft(4).Render("⊰ " + entry.body)
+		rendered = renderToolCard(entry, width, m.expandToolOutput, m.animationTick)
 	case "approval":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color(tuiColors.warning)).PaddingLeft(3).Render("⚠ " + renderMarkdown(entry.body, max(20, m.viewport.Width()-6)))
+		rendered = renderPromptCard(entry.body, width, "approval")
 	case "question":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color(tuiColors.assistant)).PaddingLeft(2).Render("? " + renderMarkdown(entry.body, max(20, m.viewport.Width()-6)))
+		rendered = renderPromptCard(entry.body, width, "question")
 	case "error":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color(tuiColors.err)).PaddingLeft(3).Render("⚠ " + entry.body)
+		rendered = renderStatusCard(entry.body, width, "error")
 	case "status":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color(tuiColors.status)).Faint(true).PaddingLeft(3).Render("◌ " + entry.body)
+		rendered = renderStatusCard(entry.body, width, "status")
 	default:
-		return entry.body
+		rendered = entry.body
 	}
+	return clipVisualWidth(rendered, width)
 }
 
 func renderMarkdown(content string, width int) string {
+	width = max(1, width)
 	renderer, err := glamour.NewTermRenderer(glamour.WithStylePath("pink"), glamour.WithWordWrap(width))
 	if err != nil {
 		return content
@@ -920,22 +1148,62 @@ func renderMarkdown(content string, width int) string {
 }
 
 func (m *appModel) View() tea.View {
-	contentWidth := max(16, m.width-4)
-	header := lipgloss.NewStyle().Width(contentWidth).Align(lipgloss.Center).Render(m.logoView())
-	divider := lipgloss.NewStyle().Foreground(lipgloss.Color(tuiColors.divider)).Render(horizontalRule(contentWidth, "─"))
-	parts := []string{header, divider, m.viewport.View()}
+	terminalWidth := max(1, m.width)
+	terminalHeight := max(1, m.height)
+	contentWidth := m.contentWidth()
+	parts := make([]string, 0, 6)
+	if m.welcomeVisible() {
+		welcome := m.welcomeView(contentWidth)
+		// A welcome card is intentionally rich, but on a very short terminal the
+		// composer and footer must remain reachable. Clip only the decorative card;
+		// no transcript content is discarded.
+		available := max(0, terminalHeight-lipgloss.Height(m.inputView(contentWidth))-lipgloss.Height(m.statusView(contentWidth))-2)
+		if available > 0 {
+			welcome = clipVisualRows(welcome, available)
+			parts = append(parts, welcome)
+		}
+	} else {
+		parts = append(parts, m.viewport.View())
+	}
 	if panel := m.selectionPanelView(contentWidth); panel != "" {
 		parts = append(parts, panel)
 	} else if panel := m.commandPanelView(contentWidth); panel != "" {
 		parts = append(parts, panel)
 	}
 	parts = append(parts, m.inputView(contentWidth), m.statusView(contentWidth))
-	content := lipgloss.NewStyle().Width(m.width).Height(m.height).PaddingLeft(1).PaddingRight(1).Render(strings.Join(parts, "\n"))
+	outerStyle := lipgloss.NewStyle().Width(terminalWidth).Height(terminalHeight)
+	if terminalWidth >= 4 {
+		outerStyle = outerStyle.PaddingLeft(1).PaddingRight(1)
+	}
+	composed := clipVisualRowsTail(strings.Join(parts, "\n"), terminalHeight)
+	content := outerStyle.Render(composed)
+	// Lipgloss deliberately refuses impossible combinations such as a one-cell
+	// box with two padding cells.  Clip the composed result as a final guard so
+	// a tiny terminal never receives bytes wider than its reported viewport.
+	content = clipVisualWidth(content, terminalWidth)
+	content = clipVisualRowsTail(content, terminalHeight)
 	view := tea.NewView(content)
 	view.AltScreen = true
 	view.MouseMode = tea.MouseModeCellMotion
 	view.WindowTitle = "Banka Code"
 	return view
+}
+
+func (m *appModel) contentWidth() int {
+	width := max(1, m.width)
+	if width < 4 {
+		return width
+	}
+	return max(1, width-4)
+}
+
+func (m *appModel) welcomeVisible() bool {
+	return len(m.entries) == 0 && m.pending == nil && !m.busy && m.input.Value() == ""
+}
+
+func (m *appModel) welcomeView(width int) string {
+	panel := renderWelcomePanel(width, m.version, m.runtime, m.details, m.hitokoto, m.animationTick)
+	return lipgloss.NewStyle().Width(max(1, width)).Align(lipgloss.Center).Render(panel)
 }
 
 func (m *appModel) logoView() string {
@@ -962,70 +1230,60 @@ func (m *appModel) commandPanelView(width int) string {
 	}
 	commands := m.visibleCommandSuggestions()
 	if len(commands) == 0 {
-		return lipgloss.NewStyle().Width(width - 2).Border(lipgloss.NormalBorder()).BorderForeground(lipgloss.Color(tuiColors.border)).PaddingLeft(1).Render("未找到命令，输入 /help 查看可用命令")
+		return lipgloss.NewStyle().Foreground(lipgloss.Color(tuiColors.subtle)).Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color(tuiColors.border)).PaddingLeft(1).PaddingRight(1).Width(max(8, width-2)).Render("未找到命令 · 输入 /help 查看帮助")
 	}
 	selected := normalizeCommandSelection(m.commandSelection, len(commands))
-	lines := make([]string, 0, len(commands))
+	lines := make([]string, 0, len(commands)+1)
+	lines = append(lines, paint(tuiColors.shimmer, "命令面板")+"  "+paint(tuiColors.subtle, "↑↓选择 · Tab补全 · Enter执行"))
 	for index, command := range commands {
-		marker := "  "
+		marker := "○ "
 		style := lipgloss.NewStyle().Foreground(lipgloss.Color(tuiColors.hint))
 		if index == selected {
-			marker = "› "
+			marker = "◉ "
 			style = style.Foreground(lipgloss.Color(tuiColors.shimmer)).Bold(true)
 		}
-		lines = append(lines, style.Render(fmt.Sprintf("%s%-10s %s", marker, command.Command, command.Description)))
+		line := fmt.Sprintf("%s%-12s %s", marker, command.Command, command.Description)
+		lines = append(lines, style.Render(ansi.Truncate(line, max(8, width-6), "…")))
 	}
-	return lipgloss.NewStyle().Width(width - 2).Border(lipgloss.NormalBorder()).BorderForeground(lipgloss.Color(tuiColors.border)).PaddingLeft(1).Render(strings.Join(lines, "\n"))
+	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color(tuiColors.brand)).PaddingLeft(1).PaddingRight(1).Width(max(8, width-2)).Render(strings.Join(lines, "\n"))
 }
 
 func (m *appModel) selectionPanelView(width int) string {
-	if m.pending == nil || (m.pending.approval == nil && !m.pending.permissions) {
+	if m.pending == nil || (m.pending.approval == nil && !m.pending.permissions && m.pending.question == nil) {
 		return ""
 	}
 	labels := make([]string, 0, 3)
+	title := "需要确认"
+	borderColor := tuiColors.warning
 	if m.pending.permissions {
+		title = "权限模式"
 		for _, option := range permissionModeOptions() {
 			labels = append(labels, option.label)
 		}
+	} else if m.pending.question != nil {
+		title = "请选择一个选项"
+		borderColor = tuiColors.brand
+		labels = append(labels, m.pending.question.Options...)
 	} else {
 		for _, option := range approvalOptions() {
 			labels = append(labels, option.label)
 		}
 	}
 	selected := normalizeCommandSelection(m.pending.selection, len(labels))
-	lines := make([]string, 0, len(labels))
-	for index, label := range labels {
-		marker := "  "
-		style := lipgloss.NewStyle().Foreground(lipgloss.Color(tuiColors.hint)).MaxWidth(max(4, width-6))
-		if index == selected {
-			marker = "› "
-			style = style.Foreground(lipgloss.Color(tuiColors.shimmer)).Bold(true)
-		}
-		lines = append(lines, style.Render(marker+label))
-	}
-	return lipgloss.NewStyle().Width(width - 2).Border(lipgloss.NormalBorder()).BorderForeground(lipgloss.Color(tuiColors.warning)).PaddingLeft(1).Render(strings.Join(lines, "\n"))
+	return renderOptionPanel(width, title, labels, selected, borderColor)
 }
 
 func (m *appModel) inputView(width int) string {
-	marker := lipgloss.NewStyle().Foreground(lipgloss.Color(tuiColors.shimmer)).Bold(true).Render("◈ ")
-	if m.busy {
-		marker = lipgloss.NewStyle().Foreground(lipgloss.Color(tuiColors.status)).Render("◇ ")
+	innerWidth := max(8, width-2)
+	row := m.input.View()
+	if m.pending != nil && (m.pending.approval != nil || m.pending.permissions || (m.pending.question != nil && len(m.pending.question.Options) > 0)) && strings.TrimSpace(m.input.Value()) == "" {
+		row = paint(tuiColors.hint, "↑↓ 选择 · Enter 确认 · Esc 取消")
 	}
-	content := marker + m.input.View()
-	if m.pending != nil && (m.pending.approval != nil || m.pending.permissions) {
-		content = marker + "↑↓ · Enter · Esc"
-	}
-	return lipgloss.NewStyle().Width(width - 2).Border(lipgloss.NormalBorder()).BorderForeground(lipgloss.Color(tuiColors.border)).PaddingLeft(1).Render(content)
+	return renderComposerRule(innerWidth, m.animationTick) + "\n" + renderComposerRow(row, innerWidth, m.busy, m.pending != nil)
 }
 
 func (m *appModel) statusView(width int) string {
-	left := " "
-	if m.busy {
-		left = statusMarquee(m.animationTick) + " " + lipgloss.NewStyle().Foreground(lipgloss.Color(tuiColors.hint)).Render("按 ESC 中断")
-	}
-	right := lipgloss.NewStyle().Foreground(lipgloss.Color(tuiColors.hint)).Faint(true).Render(providerLabel(m.runtime.Provider) + " · " + m.runtime.Model + " · " + m.toolContext.PermissionMode().Label())
-	space := max(1, width-lipgloss.Width(left)-lipgloss.Width(right))
-	return left + strings.Repeat(" ", space) + right
+	return strings.Join(renderFooterLines(width, m.runtime, m.toolContext.PermissionMode(), m.runtime.WorkspaceRoot, m.gitBranch, m.gitDirty, m.transcript, m.busy), "\n")
 }
 
 func providerLabel(provider config.ProviderKind) string {
@@ -1042,7 +1300,7 @@ func animationTick() tea.Cmd {
 func statusMarquee(tick int) string {
 	const width = 7
 	period := width*2 - 2
-	raw := tick % period
+	raw := positiveMod(tick, period)
 	head := raw
 	if raw > width-1 {
 		head = period - raw
