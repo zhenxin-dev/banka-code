@@ -18,7 +18,8 @@
 - **权限审批** — 默认离线工作区沙箱，联网、沙箱外命令和未信任 MCP 调用需用户批准
 - **上下文管理** — 会话检查点、回滚与模型摘要压缩
 - **指令与技能** — 分层加载 `AGENTS.md`，发现并按需读取 `SKILL.md`
-- **MCP** — stdio / Streamable HTTP，支持 tools、resources、resource templates 和 prompts
+- **MCP** — stdio / Streamable HTTP / SSE，支持 tools、resources、resource templates 和 prompts
+- **LSP** — 自动检测或配置语言服务器，支持诊断、跳转、悬停、符号、重命名、代码操作和格式化
 - **跨平台构建** — 一键编译 Linux / macOS / Windows 原生二进制
 
 ## 快速开始
@@ -46,6 +47,10 @@ banka <提示词>      单次执行模式，输出结果后退出
 banka -h, --help   显示帮助
 banka -v, --version 显示版本号
 banka --permission-mode <模式>  设置 default、full-access 或 yolo
+banka --profile <名称>  使用独立的 MCP 用户配置 profile（也可用 BANKA_PROFILE/OMP_PROFILE/PI_PROFILE）
+banka --no-skills  禁用技能发现与 Skill 工具
+banka --no-mcp     禁用 MCP 服务器
+banka --no-lsp     禁用 LSP 工具与写入后诊断
 ```
 
 ### 交互模式内置命令
@@ -58,6 +63,10 @@ banka --permission-mode <模式>  设置 default、full-access 或 yolo
 | `/compact` | 将较早会话压缩为摘要，保留最近两轮原文 |
 | `/permissions` | 使用选择菜单切换当前会话权限模式 |
 | `/status` | 查看当前会话状态 |
+| `/skills` | 列出已发现的技能 |
+| `/skill:<name> [args]` | 读取并调用指定技能；普通句子中以空格分隔的 `/skill:<name>` 也可触发 |
+| `/mcp [list\|tools\|reconnect <server>\|reload\|help]` | 查看、刷新或重连 MCP |
+| `/lsp [status\|reload [server]\|help]` | 查看或重载语言服务器 |
 | `/exit` | 退出 Banka Code |
 | `/quit` | 退出 Banka Code |
 
@@ -150,7 +159,7 @@ Bash 与 MCP 子进程不会继承 `BANKA_*` 模型配置和 API Key。MCP 配�
 2. Git 项目根到当前工作目录逐层的 `AGENTS.md`
 3. 同目录存在 `AGENTS.override.md` 时，用它替代该目录的 `AGENTS.md`
 
-技能从以下目录递归发现，项目技能覆盖同名全局技能：
+技能从以下兼容目录递归发现，项目技能覆盖同名全局技能（还支持 `.claude`、`.codex`、`.pi`、`.omp`、`.github` 等目录）：
 
 ```text
 ~/.banka/skills/**/SKILL.md
@@ -159,11 +168,13 @@ Bash 与 MCP 子进程不会继承 `BANKA_*` 模型配置和 API Key。MCP 配�
 <project>/.agents/skills/**/SKILL.md
 ```
 
-系统提示只包含技能名称和描述。模型命中技能后调用 `Skill` 工具完整读取正文，技能引用的其他文件也通过该工具按需读取。
+默认情况下，系统提示只列出技能名称和描述；标记 `alwaysApply: true` 且未隐藏的技能会把去除 frontmatter 后的正文（有大小上限）注入 `[Always-Apply Skills]`。模型命中普通技能后调用 `Skill` 工具完整读取 `SKILL.md`，技能引用的其他文件也通过该工具按需读取；兼容 `skill://<name>/<relative-path>` URI。项目技能会覆盖同名用户技能。
 
 ## MCP
 
-Banka 合并读取 `~/.banka/mcp.json`、项目 `.mcp.json` 和项目 `.banka/mcp.json`，后者覆盖前者。兼容标准 `mcpServers` 字段和 Banka 的 `servers` 字段。
+Banka 按优先级合并用户、项目和兼容客户端配置，原生文件包括 `~/.banka/mcp.json`、`~/.omp/agent/mcp.json`、项目 `.mcp.json` 和项目 `.banka/mcp.json`；后出现的项目配置覆盖前者。也支持 JSON/YAML/TOML、`mcpServers`/`mcp_servers`/`servers`，以及 Claude、Codex、Gemini、Cursor、Windsurf、VS Code 和 OpenCode 的常见配置格式。
+
+使用 `--profile <name>`（或 `BANKA_PROFILE`、`OMP_PROFILE`、`PI_PROFILE`）时，用户级原生配置切换到 `~/.omp/profiles/<name>/agent/mcp.json`，不会混入默认 profile；项目级配置仍对所有 profile 生效。`/mcp reload` 重新读取配置，`/mcp reconnect <server>` 只重连指定服务器。慢服务器会在后台完成发现，工具列表准备好后自动更新。
 
 ```json
 {
@@ -184,6 +195,68 @@ Banka 合并读取 `~/.banka/mcp.json`、项目 `.mcp.json` 和项目 `.banka/mc
 
 默认情况下，每次 MCP 工具、资源或 prompt 访问都需要批准。只有你明确控制并信任服务器时，才可在对应配置加入 `"trusted": true`。MCP 工具注册为 `mcp__<server>__<tool>`，并向服务器公布当前项目根目录。
 
+## LSP
+
+启动时会读取工作区和用户级 `lsp.json` / `lsp.yaml` / `lsp.yml`（也接受带点的隐藏文件），合并自带的常见语言服务器配置。只有根标记存在且服务器命令可执行时才会启用自动检测；服务器进程按需懒启动，空闲超时后自动回收。
+
+配置文件从低到高覆盖：用户目录、兼容客户端目录（`.omp`、`.pi`、`.claude`、`.codex`、`.agents` 等）、项目兼容目录和项目根目录。服务器对象采用浅合并，`settings`、`initOptions`、`capabilities` 等对象字段由高优先级配置整体替换。
+
+最小配置示例（项目根下的 `.banka/lsp.json`）：
+
+```json
+{
+  "idleTimeoutMs": 300000,
+  "servers": {
+    "gopls": {
+      "command": "gopls",
+      "args": ["serve"],
+      "fileTypes": [".go"],
+      "rootMarkers": ["go.mod", "go.work"],
+      "languageId": "go"
+    },
+    "my-lsp": {
+      "command": "my-lsp-server",
+      "args": ["--stdio"],
+      "fileTypes": [".xyz"],
+      "rootMarkers": [".xyz-project"]
+    },
+    "swiftlint": {
+      "command": "swiftlint",
+      "linter": "swiftlint",
+      "fileTypes": [".swift"],
+      "rootMarkers": [".swiftlint.yml", "Package.swift"]
+    },
+    "biome": {
+      "command": "biome",
+      "linter": "biome",
+      "fileTypes": [".ts", ".tsx", ".js", ".jsx"],
+      "rootMarkers": ["biome.json", "biome.jsonc"]
+    }
+  }
+}
+```
+
+YAML 使用相同字段；常见别名 `file_types`、`root_markers`、`language_id`、`initialization_options` 也会被规范化。需要明确区分传输方式时可设置 `mode: "stdio"` / `"lsp"` / `"json-rpc"`（标准 JSON-RPC），或 `mode: "cli"`（按命令名识别已支持的 CLI linter）；显式 `linter: "swiftlint"` 或 `linter: "biome"` 优先。命令会优先从项目的 `node_modules/.bin`、Python 虚拟环境、Ruby bundle 和 `bin/` 中查找，再回退到 `PATH`。
+
+SwiftLint 和 Biome 是 CLI linter，不是持久化 LSP 会话：它们可提供文件诊断，Biome 还支持格式化，但不提供跳转、悬停、符号、重命名或原始 JSON-RPC 请求等 LSP 能力。Biome 诊断使用 JSON reporter，SwiftLint 使用 JSON reporter；非零退出码在有合法诊断输出时仍视为成功。
+
+模型通过 `LSP` 工具选择操作：
+
+| action | 用途 | 主要参数 |
+|--------|------|----------|
+| `status` | 查看已检测服务器和运行状态 | 无 |
+| `diagnostics` | 文件、glob 或全工作区诊断 | `file`（使用 `*` 表示全工作区） |
+| `definition` / `type_definition` / `implementation` / `references` | 跳转和引用查询 | `file`、`line`、可选 `symbol` |
+| `hover` | 获取悬停说明 | `file`、`line`、可选 `symbol` |
+| `symbols` | 文件符号或工作区符号搜索 | `file`，工作区搜索时使用 `query` |
+| `rename` | 语义重命名，默认应用编辑 | `file`、`line`、`new_name`、可选 `apply` |
+| `rename_file` | 通知服务器并移动文件/目录 | `file`、`new_name`、可选 `apply` |
+| `code_actions` | 列出或应用代码操作 | `file`、`line`、`query`（索引/标题）、`apply` |
+| `formatting` / `format` | 请求并应用格式化编辑 | `file`、可选 `apply` |
+| `capabilities` / `reload` / `request` | 查看能力、重启服务器或发送原始 JSON-RPC | `file`、`query`、`payload` |
+
+所有 LSP 工作区编辑都会校验路径、符号链接和 UTF-16 位置，并在写入前完整预检；修改类操作需要当前权限模式或用户批准。内置 `Write`、`Edit`、`ApplyPatch` 完成后会同步打开文档并（按配置）把诊断作为非致命反馈返回。可通过 `--no-lsp` 关闭此功能，也可在配置中设置 `enabled: false`。
+
 ## 项目结构
 
 ```
@@ -194,6 +267,7 @@ banka-code/
 │   ├── config/               # 运行时配置
 │   ├── instructions/         # AGENTS.md 分层加载
 │   ├── llm/                  # OpenAI Responses / Chat / Anthropic 客户端
+│   ├── lsp/                  # LSP 配置、stdio 客户端、工作区编辑与工具
 │   ├── mcp/                  # MCP 配置、客户端和能力适配
 │   ├── messages/             # 会话消息模型
 │   ├── prompt/               # 系统提示词

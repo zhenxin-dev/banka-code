@@ -75,40 +75,70 @@ func (t *capabilityTool) InputSchema() tools.JSONSchema {
 }
 
 func (t *capabilityTool) Execute(ctx context.Context, arguments map[string]any, toolContext tools.Context) (tools.Result, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	switch t.kind {
 	case "list_resources":
-		return t.listResources(ctx, arguments)
+		return t.listResources(ctx, arguments, toolContext)
 	case "read_resource":
 		return t.readResource(ctx, arguments, toolContext)
 	case "list_prompts":
-		return t.listPrompts(ctx, arguments)
+		return t.listPrompts(ctx, arguments, toolContext)
 	default:
 		return t.getPrompt(ctx, arguments, toolContext)
 	}
 }
 
-func (t *capabilityTool) listResources(ctx context.Context, arguments map[string]any) (tools.Result, error) {
+func (t *capabilityTool) listResources(ctx context.Context, arguments map[string]any, contexts ...tools.Context) (tools.Result, error) {
+	var toolContext tools.Context
+	if len(contexts) > 0 {
+		toolContext = contexts[0]
+	}
 	names, err := t.selectedServers(arguments)
 	if err != nil {
 		return tools.Result{}, err
 	}
 	result := make(map[string]any)
 	for _, name := range names {
-		connection := t.manager.connections[name]
+		connection, exists := t.manager.connection(name)
+		if !exists || connection.session == nil {
+			continue
+		}
+		if approval, approvalErr := approveMCPAccess(ctx, toolContext, name, connection, "list resources"); approvalErr != nil || approval != nil {
+			if approval != nil {
+				return *approval, approvalErr
+			}
+			return tools.Result{}, approvalErr
+		}
+		operationContext, cancel := mcpOperationContext(ctx, connection.timeout)
 		var resources []*mcp.Resource
-		for resource, listErr := range connection.session.Resources(ctx, nil) {
+		for resource, listErr := range connection.session.Resources(operationContext, nil) {
 			if listErr != nil {
+				if isMCPMethodNotFound(listErr) {
+					// Servers are allowed to omit resources capability. Treat the
+					// protocol's method-not-found response as an empty collection so
+					// one limited server does not hide resources from other servers.
+					result[name] = map[string]any{"resources": []*mcp.Resource{}, "resourceTemplates": []*mcp.ResourceTemplate{}}
+					break
+				}
+				cancel()
 				return tools.Result{}, listErr
 			}
 			resources = append(resources, resource)
 		}
 		var templates []*mcp.ResourceTemplate
-		for template, listErr := range connection.session.ResourceTemplates(ctx, nil) {
+		for template, listErr := range connection.session.ResourceTemplates(operationContext, nil) {
 			if listErr != nil {
+				cancel()
+				if isMCPMethodNotFound(listErr) {
+					break
+				}
 				return tools.Result{}, listErr
 			}
 			templates = append(templates, template)
 		}
+		cancel()
 		result[name] = map[string]any{"resources": resources, "resourceTemplates": templates}
 	}
 	return jsonResult(result)
@@ -130,28 +160,50 @@ func (t *capabilityTool) readResource(ctx context.Context, arguments map[string]
 		}
 		return tools.Result{}, err
 	}
-	result, err := connection.session.ReadResource(ctx, &mcp.ReadResourceParams{URI: uri})
+	operationContext, cancel := mcpOperationContext(ctx, connection.timeout)
+	defer cancel()
+	result, err := connection.session.ReadResource(operationContext, &mcp.ReadResourceParams{URI: uri})
 	if err != nil {
 		return tools.Result{}, err
 	}
 	return jsonResult(result)
 }
 
-func (t *capabilityTool) listPrompts(ctx context.Context, arguments map[string]any) (tools.Result, error) {
+func (t *capabilityTool) listPrompts(ctx context.Context, arguments map[string]any, contexts ...tools.Context) (tools.Result, error) {
+	var toolContext tools.Context
+	if len(contexts) > 0 {
+		toolContext = contexts[0]
+	}
 	names, err := t.selectedServers(arguments)
 	if err != nil {
 		return tools.Result{}, err
 	}
 	result := make(map[string]any)
 	for _, name := range names {
-		connection := t.manager.connections[name]
+		connection, exists := t.manager.connection(name)
+		if !exists || connection.session == nil {
+			continue
+		}
+		if approval, approvalErr := approveMCPAccess(ctx, toolContext, name, connection, "list prompts"); approvalErr != nil || approval != nil {
+			if approval != nil {
+				return *approval, approvalErr
+			}
+			return tools.Result{}, approvalErr
+		}
+		operationContext, cancel := mcpOperationContext(ctx, connection.timeout)
 		var prompts []*mcp.Prompt
-		for prompt, listErr := range connection.session.Prompts(ctx, nil) {
+		for prompt, listErr := range connection.session.Prompts(operationContext, nil) {
 			if listErr != nil {
+				cancel()
+				if isMCPMethodNotFound(listErr) {
+					result[name] = []*mcp.Prompt{}
+					break
+				}
 				return tools.Result{}, listErr
 			}
 			prompts = append(prompts, prompt)
 		}
+		cancel()
 		result[name] = prompts
 	}
 	return jsonResult(result)
@@ -177,7 +229,9 @@ func (t *capabilityTool) getPrompt(ctx context.Context, arguments map[string]any
 		}
 		return tools.Result{}, err
 	}
-	result, err := connection.session.GetPrompt(ctx, &mcp.GetPromptParams{Name: name, Arguments: promptArguments})
+	operationContext, cancel := mcpOperationContext(ctx, connection.timeout)
+	defer cancel()
+	result, err := connection.session.GetPrompt(operationContext, &mcp.GetPromptParams{Name: name, Arguments: promptArguments})
 	if err != nil {
 		return tools.Result{}, err
 	}
@@ -194,7 +248,7 @@ func (t *capabilityTool) selectedServers(arguments map[string]any) ([]string, er
 	if !ok || name == "" {
 		return nil, errors.New("'server' must be a non-empty string when provided")
 	}
-	if _, exists := t.manager.connections[name]; !exists {
+	if _, exists := t.manager.connection(name); !exists {
 		return nil, fmt.Errorf("unknown connected MCP server: %s", name)
 	}
 	return []string{name}, nil
@@ -208,7 +262,11 @@ func (t *capabilityTool) requiredServer(arguments map[string]any) (string, serve
 	if len(names) != 1 || arguments["server"] == nil {
 		return "", serverConnection{}, errors.New("a connected MCP 'server' is required")
 	}
-	return names[0], t.manager.connections[names[0]], nil
+	connection, exists := t.manager.connection(names[0])
+	if !exists {
+		return "", serverConnection{}, fmt.Errorf("unknown connected MCP server: %s", names[0])
+	}
+	return names[0], connection, nil
 }
 
 func approveMCPAccess(ctx context.Context, toolContext tools.Context, serverName string, connection serverConnection, action string) (*tools.Result, error) {
@@ -256,7 +314,15 @@ func jsonResult(value any) (tools.Result, error) {
 	}
 	content := string(encoded)
 	if len(content) > maxMCPResultBytes {
-		content = content[:maxMCPResultBytes] + "\n\n[truncated]"
+		content = truncateUTF8(content, maxMCPResultBytes) + "\n\n[truncated]"
 	}
 	return tools.Result{Content: content}, nil
+}
+
+func isMCPMethodNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "method not found") || strings.Contains(message, "method not implemented") || strings.Contains(message, "-32601")
 }

@@ -46,6 +46,22 @@ type RuntimeDetails struct {
 	InstructionFiles int
 	Skills           int
 	MCP              []string
+	LSP              []string
+	// Actions exposes optional runtime management hooks to the interactive
+	// command layer. Keeping these callbacks at the boundary avoids coupling
+	// the TUI package to the MCP/LSP/skills implementations and also lets
+	// embedders provide their own managers.
+	Actions RuntimeActions
+}
+
+// RuntimeActions are optional handlers for interactive capability commands.
+// A nil handler leaves the corresponding command unavailable but does not
+// affect model-facing tools.
+type RuntimeActions struct {
+	SkillNames  []string
+	InvokeSkill func(context.Context, string, string) (string, error)
+	MCP         func(context.Context, string) (string, error)
+	LSP         func(context.Context, string) (string, error)
 }
 
 type animationTickMsg time.Time
@@ -539,6 +555,29 @@ func (m *appModel) submit(value string) (tea.Model, tea.Cmd) {
 	m.commandSelection = 0
 	m.resize()
 
+	name, args, skillInvocation := parseSkillInvocation(userPrompt)
+	if !skillInvocation {
+		name, args, skillInvocation = parseEmbeddedSkillInvocation(userPrompt)
+	}
+	if skillInvocation {
+		if m.details.Actions.InvokeSkill == nil {
+			m.entries = append(m.entries, uiEntry{kind: "error", body: "Skill 命令不可用：当前未加载技能"})
+			m.refreshViewport()
+			return m, nil
+		}
+		content, err := m.details.Actions.InvokeSkill(m.ctx, name, args)
+		if err != nil {
+			m.entries = append(m.entries, uiEntry{kind: "error", body: err.Error()})
+			m.refreshViewport()
+			return m, nil
+		}
+		prompt := fmt.Sprintf("[Skill: %s]\n\n%s", name, content)
+		if args != "" {
+			prompt += "\n\n[User arguments]\n" + args
+		}
+		return m.startAgentTurn(userPrompt, prompt)
+	}
+
 	if command, ok := parseBuiltinCommand(userPrompt); ok {
 		switch command.Name {
 		case "exit", "quit":
@@ -562,6 +601,10 @@ func (m *appModel) submit(value string) (tea.Model, tea.Cmd) {
 			m.entries = append(m.entries, uiEntry{kind: "assistant", body: buildBuiltinHelpBody()})
 			m.refreshViewport()
 			return m, nil
+		case "skills":
+			m.entries = append(m.entries, uiEntry{kind: "assistant", body: m.skillsBody()})
+			m.refreshViewport()
+			return m, nil
 		case "status":
 			body := fmt.Sprintf("## 当前状态\n\n- Provider：%s\n- Model：%s\n- 权限模式：%s\n- 已注册工具：%d\n- AGENTS 指令文件：%d\n- Skills：%d\n- 当前屏幕消息数：%d\n- 当前会话消息数：%d\n- 可回滚轮数：%d",
 				providerLabel(m.runtime.Provider), m.runtime.Model, m.toolContext.PermissionMode().Label(), len(m.registry.List()), m.details.InstructionFiles,
@@ -571,16 +614,59 @@ func (m *appModel) submit(value string) (tea.Model, tea.Cmd) {
 			} else {
 				body += "\n- MCP：" + strings.Join(m.details.MCP, "；")
 			}
+			if len(m.details.LSP) == 0 {
+				body += "\n- LSP：未检测到可用服务器"
+			} else {
+				body += "\n- LSP：" + strings.Join(m.details.LSP, "；")
+			}
 			m.entries = append(m.entries, uiEntry{kind: "assistant", body: body})
 			m.refreshViewport()
 			return m, nil
 		}
 	}
+	for _, managed := range []struct {
+		name    string
+		handler func(context.Context, string) (string, error)
+	}{
+		{name: "mcp", handler: m.details.Actions.MCP},
+		{name: "lsp", handler: m.details.Actions.LSP},
+	} {
+		if commandArgs, ok := parseManagedCommand(userPrompt, managed.name); ok {
+			if managed.handler == nil {
+				m.entries = append(m.entries, uiEntry{kind: "error", body: "/" + managed.name + " 命令不可用"})
+				m.refreshViewport()
+				return m, nil
+			}
+			body, err := managed.handler(m.ctx, commandArgs)
+			if err != nil {
+				m.entries = append(m.entries, uiEntry{kind: "error", body: err.Error()})
+			} else {
+				m.entries = append(m.entries, uiEntry{kind: "assistant", body: body})
+			}
+			m.refreshViewport()
+			return m, nil
+		}
+	}
 
+	return m.startAgentTurn(userPrompt, userPrompt)
+}
+
+func (m *appModel) skillsBody() string {
+	if len(m.details.Actions.SkillNames) == 0 {
+		return "当前没有发现可用技能。"
+	}
+	lines := []string{"## 可用技能", ""}
+	for _, name := range m.details.Actions.SkillNames {
+		lines = append(lines, "- `"+name+"`：输入 `/skill:"+name+"` 调用")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m *appModel) startAgentTurn(displayPrompt string, modelPrompt string) (tea.Model, tea.Cmd) {
 	m.saveCheckpoint()
 	m.busy = true
 	m.input.Placeholder = "等待中…"
-	m.entries = append(m.entries, uiEntry{kind: "user", body: userPrompt})
+	m.entries = append(m.entries, uiEntry{kind: "user", body: displayPrompt})
 	m.entries = append(m.entries, uiEntry{kind: "assistant"})
 	m.streamingEntry = len(m.entries) - 1
 	m.refreshViewport()
@@ -589,7 +675,7 @@ func (m *appModel) submit(value string) (tea.Model, tea.Cmd) {
 	m.cancel = cancel
 	previous := append([]messages.Message(nil), m.transcript...)
 	return m, tea.Batch(
-		runAgent(runContext, m.agentEvents, m.systemPrompt, m.client, m.registry, m.toolContext, previous, userPrompt),
+		runAgent(runContext, m.agentEvents, m.systemPrompt, m.client, m.registry, m.toolContext, previous, modelPrompt),
 		waitForAgentEvent(m.agentEvents),
 	)
 }
@@ -727,7 +813,7 @@ func (m *appModel) removeEmptyStreamingEntry() {
 }
 
 func (m *appModel) visibleCommandSuggestions() []builtinCommand {
-	commands := findBuiltinCommands(m.input.Value())
+	commands := findCommands(m.input.Value(), m.details.Actions.SkillNames)
 	if len(commands) > 6 {
 		return commands[:6]
 	}

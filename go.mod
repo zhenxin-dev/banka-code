@@ -3,12 +3,14 @@ module github.com/zhenxin-dev/banka-code
 go 1.26
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	charm.land/bubbles/v2 v2.0.0
 	charm.land/bubbletea/v2 v2.0.0
 	charm.land/glamour/v2 v2.0.1
 	charm.land/lipgloss/v2 v2.0.4
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/modelcontextprotocol/go-sdk v1.2.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (

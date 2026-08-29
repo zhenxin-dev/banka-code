@@ -59,7 +59,75 @@ func (applyPatchTool) Execute(ctx context.Context, arguments map[string]any, too
 	if err := apply.Run(); err != nil {
 		return Result{Content: "Patch application failed after validation:\n" + applyOutput.String(), IsError: true}, nil
 	}
-	return Result{Content: "Applied patch successfully."}, nil
+	result := Result{Content: "Applied patch successfully."}
+	var changes []FileChange
+	for _, target := range patchTargetPaths(patch) {
+		absolutePath, resolveErr := toolContext.ResolvePath(target.path)
+		if resolveErr == nil {
+			changes = append(changes, FileChange{Path: absolutePath, Operation: target.operation})
+		}
+	}
+	appendFileObserverFeedback(ctx, toolContext, changes, &result)
+	return result, nil
+}
+
+type patchTarget struct {
+	path      string
+	operation string
+}
+
+func patchTargetPaths(patch string) []patchTarget {
+	// Unified diffs describe one logical file with a `---`/`+++` pair.  Looking
+	// at each header independently misclassified every ordinary modification as
+	// a delete followed by a patch, causing observers (notably LSP) to close and
+	// reopen the same document twice.  Pair the headers first and derive the
+	// actual operation from /dev/null markers.
+	seen := make(map[string]bool)
+	var result []patchTarget
+	var oldPath, newPath string
+	flush := func() {
+		if oldPath == "" && newPath == "" {
+			return
+		}
+		operation := "patch"
+		value := newPath
+		switch {
+		case oldPath == "/dev/null":
+			operation = "create"
+		case newPath == "/dev/null":
+			operation = "delete"
+			value = oldPath
+		}
+		oldPath, newPath = "", ""
+		if value == "" || value == "/dev/null" {
+			return
+		}
+		value = strings.TrimPrefix(strings.TrimPrefix(value, "a/"), "b/")
+		if !seen[value] {
+			seen[value] = true
+			result = append(result, patchTarget{path: value, operation: operation})
+		}
+	}
+	for _, line := range strings.Split(patch, "\n") {
+		switch {
+		case strings.HasPrefix(line, "--- "):
+			// A new old-header closes a malformed/incomplete previous pair, while
+			// still allowing standard multi-file diffs to be processed.
+			flush()
+			value, err := parsePatchPath(line[4:])
+			if err == nil {
+				oldPath = value
+			}
+		case strings.HasPrefix(line, "+++ "):
+			value, err := parsePatchPath(line[4:])
+			if err == nil {
+				newPath = value
+			}
+			flush()
+		}
+	}
+	flush()
+	return result
 }
 
 func validatePatchPaths(patch string, workspaceRoot string) error {

@@ -51,3 +51,33 @@ func TestFormatToolCallSummarizesArguments(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestParseEmbeddedSkillInvocation(t *testing.T) {
+	tests := []struct {
+		input string
+		name  string
+		args  string
+		ok    bool
+	}{
+		{input: "review this diff /skill:review", name: "review", args: "review this diff", ok: true},
+		{input: "/skill:review changed files", ok: false},
+		{input: "/help /skill:review", ok: false},
+		{input: "!run /skill:review", ok: false},
+		{input: ">python /skill:review", ok: false},
+		{input: "https://example.test/skill:review", ok: false},
+		{input: "./skill:review", ok: false},
+	}
+	for _, test := range tests {
+		name, args, ok := parseEmbeddedSkillInvocation(test.input)
+		if ok != test.ok || name != test.name || args != test.args {
+			t.Errorf("parseEmbeddedSkillInvocation(%q) = (%q, %q, %v), want (%q, %q, %v)", test.input, name, args, ok, test.name, test.args, test.ok)
+		}
+	}
+}
+
+func TestFindCommandsIncludesSkillCompletions(t *testing.T) {
+	commands := findCommands("/skill:re", []string{"review", "release"})
+	if len(commands) != 2 || commands[0].Command != "/skill:review" || commands[1].Command != "/skill:release" {
+		t.Fatalf("unexpected skill completions: %#v", commands)
+	}
+}

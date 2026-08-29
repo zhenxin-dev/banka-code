@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"sync"
 
 	"github.com/zhenxin-dev/banka-code/internal/messages"
 	"github.com/zhenxin-dev/banka-code/internal/permissions"
@@ -66,6 +67,30 @@ type Context struct {
 	WorkspaceRoot string
 	Interaction   Interaction
 	Permissions   *permissions.Policy
+	FileObserver  FileObserver
+	// URIReader resolves host-owned URI schemes (currently skill://) for tools
+	// such as Read. It is optional; hosts that do not mount internal resources
+	// retain the ordinary path-only behavior.
+	URIReader InternalURIReader
+}
+
+// FileChange describes a workspace file mutation completed by a built-in tool.
+type FileChange struct {
+	Path      string
+	Operation string
+}
+
+// FileObserver receives completed workspace file changes. Implementations may
+// synchronize language servers or return non-fatal verification feedback.
+type FileObserver interface {
+	AfterFileChanges(context.Context, []FileChange) (string, error)
+}
+
+// InternalURIReader resolves a host-owned URI without granting a tool
+// arbitrary filesystem or network access. Implementations decide which URI
+// schemes are supported and enforce their own containment and approval rules.
+type InternalURIReader interface {
+	ReadURI(context.Context, string) (string, error)
 }
 
 // PermissionMode returns the active permission mode.
@@ -107,7 +132,13 @@ func (c Context) RequestPermission(ctx context.Context, request ApprovalRequest)
 		return false, err
 	}
 	if decision == ApprovalAllowAlways {
-		c.Permissions.Allow(scope)
+		// Context is passed by value and callers may intentionally omit a
+		// permission policy (for example, when embedding one tool in a test or
+		// another host).  An "always" decision cannot be persisted in that case,
+		// but it must still allow the current operation rather than panic.
+		if c.Permissions != nil {
+			c.Permissions.Allow(scope)
+		}
 	}
 	return decision == ApprovalAllowOnce || decision == ApprovalAllowAlways, nil
 }
@@ -128,14 +159,19 @@ type Definition interface {
 
 // Registry stores tools by name.
 type Registry struct {
+	mu    sync.RWMutex
 	tools map[string]Definition
 	order []Definition
 }
 
 // NewRegistry creates a registry.
 func NewRegistry(definitions []Definition) *Registry {
-	registry := &Registry{tools: make(map[string]Definition), order: definitions}
+	registry := &Registry{tools: make(map[string]Definition)}
 	for _, definition := range definitions {
+		if definition == nil {
+			continue
+		}
+		registry.order = append(registry.order, definition)
 		registry.tools[definition.Name()] = definition
 	}
 	return registry
@@ -143,12 +179,44 @@ func NewRegistry(definitions []Definition) *Registry {
 
 // List returns tools in display order.
 func (r *Registry) List() []Definition {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return append([]Definition(nil), r.order...)
+}
+
+// Replace atomically replaces the registry's definitions. It is used by
+// dynamic providers such as MCP when a server emits a tools/list_changed
+// notification. The caller should pass the complete desired ordered set.
+func (r *Registry) Replace(definitions []Definition) {
+	if r == nil {
+		return
+	}
+	newTools := make(map[string]Definition, len(definitions))
+	newOrder := make([]Definition, 0, len(definitions))
+	for _, definition := range definitions {
+		if definition == nil {
+			continue
+		}
+		newTools[definition.Name()] = definition
+		newOrder = append(newOrder, definition)
+	}
+	r.mu.Lock()
+	r.tools = newTools
+	r.order = newOrder
+	r.mu.Unlock()
 }
 
 // Execute runs a tool call and always converts failures into tool result messages.
 func (r *Registry) Execute(ctx context.Context, toolCall messages.ToolCall, toolContext Context) messages.Message {
+	if r == nil {
+		return messages.NewToolMessage(toolCall.ID, toolCall.Name, fmt.Sprintf("Unknown tool: %s", toolCall.Name), true)
+	}
+	r.mu.RLock()
 	definition, ok := r.tools[toolCall.Name]
+	r.mu.RUnlock()
 	if !ok {
 		return messages.NewToolMessage(toolCall.ID, toolCall.Name, fmt.Sprintf("Unknown tool: %s", toolCall.Name), true)
 	}

@@ -75,6 +75,14 @@ func TestApprovalAllowAlwaysIsRememberedForMatchingScope(t *testing.T) {
 	}
 }
 
+func TestApprovalAllowAlwaysWithoutPolicyDoesNotPanic(t *testing.T) {
+	interaction := &stubInteraction{decision: ApprovalAllowAlways}
+	allowed, err := (Context{Interaction: interaction}).RequestPermission(context.Background(), ApprovalRequest{Scope: "demo"})
+	if err != nil || !allowed {
+		t.Fatalf("approval without policy failed: allowed=%v err=%v", allowed, err)
+	}
+}
+
 func TestPermissionModesAutoApproveExpectedOperations(t *testing.T) {
 	request := ApprovalRequest{ToolName: "MCP", Kind: ApprovalExternal, Scope: "mcp:test"}
 	full := Context{Permissions: permissions.NewPolicy(permissions.ModeFullAccess)}

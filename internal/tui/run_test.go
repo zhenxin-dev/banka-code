@@ -223,3 +223,34 @@ func TestExtractVisibleSelectionHandlesMultipleLinesAndWideText(t *testing.T) {
 		t.Fatalf("got selection %q, want %q", selected, "line\n你好")
 	}
 }
+
+func TestSkillSlashCommandInvokesRuntimeHandler(t *testing.T) {
+	called := false
+	model := newAppModel(context.Background(), "0.1.0", config.RuntimeConfig{}, nil, tools.NewRegistry(nil), tools.Context{})
+	model.details.Actions.SkillNames = []string{"review"}
+	model.details.Actions.InvokeSkill = func(_ context.Context, name string, args string) (string, error) {
+		called = true
+		if name != "review" || args != "changed files" {
+			t.Fatalf("unexpected skill invocation: %q %q", name, args)
+		}
+		return "check the diff", nil
+	}
+	model.submit("/skill:review changed files")
+	if !called || !model.busy || len(model.entries) < 2 || model.entries[len(model.entries)-2].body != "/skill:review changed files" {
+		t.Fatalf("skill command did not start a turn: called=%v busy=%v entries=%#v", called, model.busy, model.entries)
+	}
+}
+
+func TestManagedCommandsUseRuntimeHandler(t *testing.T) {
+	model := newAppModel(context.Background(), "0.1.0", config.RuntimeConfig{}, nil, tools.NewRegistry(nil), tools.Context{})
+	model.details.Actions.MCP = func(_ context.Context, command string) (string, error) {
+		if command != "tools" {
+			t.Fatalf("unexpected MCP command: %q", command)
+		}
+		return "mcp tools", nil
+	}
+	model.submit("/mcp tools")
+	if len(model.entries) != 1 || model.entries[0].body != "mcp tools" {
+		t.Fatalf("MCP command output was not shown: %#v", model.entries)
+	}
+}

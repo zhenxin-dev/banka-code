@@ -130,3 +130,40 @@ func TestReadSupportsLineOffsetAndLimit(t *testing.T) {
 		t.Fatalf("unexpected partial read: %q", result.Content)
 	}
 }
+
+func TestReadUsesMountedInternalURIReader(t *testing.T) {
+	reader := &stubURIReader{values: map[string]string{
+		"skill://demo/reference.md": "one\ntwo\nthree\n",
+	}}
+	result, err := NewReadTool().Execute(context.Background(), map[string]any{
+		"path": "skill://demo/reference.md", "offset": float64(2), "limit": float64(1),
+	}, Context{WorkspaceRoot: t.TempDir(), URIReader: reader})
+	if err != nil {
+		t.Fatalf("Read returned error: %v", err)
+	}
+	if result.Content != "two\n\n[truncated: showing lines 2-2 of 3]" {
+		t.Fatalf("unexpected internal URI read: %q", result.Content)
+	}
+	if reader.last != "skill://demo/reference.md" {
+		t.Fatalf("reader received unexpected URI: %q", reader.last)
+	}
+}
+
+func TestReadRejectsUnsupportedURIAndUnmountedSkillURI(t *testing.T) {
+	if _, err := NewReadTool().Execute(context.Background(), map[string]any{"path": "https://example.test/file"}, Context{}); err == nil {
+		t.Fatal("Read accepted an unsupported network URI")
+	}
+	if _, err := NewReadTool().Execute(context.Background(), map[string]any{"path": "skill://demo"}, Context{}); err == nil {
+		t.Fatal("Read accepted an unmounted skill URI")
+	}
+}
+
+type stubURIReader struct {
+	values map[string]string
+	last   string
+}
+
+func (r *stubURIReader) ReadURI(_ context.Context, uri string) (string, error) {
+	r.last = uri
+	return r.values[uri], nil
+}

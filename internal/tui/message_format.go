@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/zhenxin-dev/banka-code/internal/messages"
@@ -22,6 +23,9 @@ var builtinCommands = []builtinCommand{
 	{Name: "compact", Command: "/compact", Description: "压缩较早的会话上下文"},
 	{Name: "permissions", Command: "/permissions", Description: "切换权限模式"},
 	{Name: "status", Command: "/status", Description: "查看当前会话状态"},
+	{Name: "skills", Command: "/skills", Description: "列出已发现的技能"},
+	{Name: "mcp", Command: "/mcp", Description: "查看或管理 MCP 服务器"},
+	{Name: "lsp", Command: "/lsp", Description: "查看或管理语言服务器"},
 	{Name: "exit", Command: "/exit", Description: "退出 Banka Code"},
 	{Name: "quit", Command: "/quit", Description: "退出 Banka Code"},
 }
@@ -100,6 +104,123 @@ func buildBuiltinHelpBody() string {
 	return strings.Join(lines, "\n")
 }
 
+// findCommands combines built-in commands with discovered skill shortcuts.
+// Keeping this separate from findBuiltinCommands preserves the small helper's
+// stable behavior for callers/tests that only need built-in completion.
+func findCommands(value string, skillNames []string) []builtinCommand {
+	result := findBuiltinCommands(value)
+	prompt := strings.ToLower(strings.TrimSpace(value))
+	if !strings.HasPrefix(prompt, "/skill:") {
+		return result
+	}
+	for _, name := range skillNames {
+		command := "/skill:" + name
+		if strings.HasPrefix(strings.ToLower(command), prompt) {
+			result = append(result, builtinCommand{Name: "skill:" + name, Command: command, Description: "调用技能 " + name})
+		}
+	}
+	return result
+}
+
+func parseSkillInvocation(value string) (name string, args string, ok bool) {
+	trimmed := strings.TrimSpace(value)
+	if len(trimmed) < len("/skill:") || !strings.EqualFold(trimmed[:len("/skill:")], "/skill:") {
+		return "", "", false
+	}
+	remainder := strings.TrimSpace(trimmed[len("/skill:"):])
+	if remainder == "" {
+		return "", "", false
+	}
+	parts := strings.Fields(remainder)
+	if len(parts) == 0 || strings.ContainsAny(parts[0], "/\\") {
+		return "", "", false
+	}
+	name = parts[0]
+	args = strings.TrimSpace(remainder[len(parts[0]):])
+	return name, args, true
+}
+
+// parseEmbeddedSkillInvocation recognizes a whitespace-delimited /skill:name
+// token inside ordinary prose. OMP-compatible clients use this form so a user
+// can write "review this diff /skill:review" without having to move the skill
+// command to the beginning of the draft. The returned args are the surrounding
+// prose with the invocation token removed.
+func parseEmbeddedSkillInvocation(value string) (name string, args string, ok bool) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", "", false
+	}
+	// A leading slash is another slash command, while ! and > are commonly
+	// used for local shell/Python execution in compatible TUIs. Do not let an
+	// embedded token change the meaning of those drafts.
+	first, _ := utf8.DecodeRuneInString(trimmed)
+	if first == '/' || first == '!' || first == '>' {
+		return "", "", false
+	}
+	for index := 0; index < len(value); {
+		for index < len(value) {
+			runeValue, size := utf8.DecodeRuneInString(value[index:])
+			if !unicode.IsSpace(runeValue) {
+				break
+			}
+			index += size
+		}
+		start := index
+		for index < len(value) {
+			runeValue, size := utf8.DecodeRuneInString(value[index:])
+			if unicode.IsSpace(runeValue) {
+				break
+			}
+			index += size
+		}
+		if start == index {
+			break
+		}
+		token := value[start:index]
+		if len(token) <= len("/skill:") || !strings.EqualFold(token[:len("/skill:")], "/skill:") {
+			continue
+		}
+		candidate := token[len("/skill:"):]
+		if strings.ContainsAny(candidate, "/\\") || strings.TrimSpace(candidate) == "" {
+			continue
+		}
+		// Skill names are intentionally conservative in the command layer. Keep
+		// punctuation and Unicode letters valid, but reject control characters so
+		// a malformed token cannot inject a second line into the generated prompt.
+		valid := true
+		for _, runeValue := range candidate {
+			if unicode.IsControl(runeValue) || unicode.IsSpace(runeValue) {
+				valid = false
+				break
+			}
+		}
+		if !valid {
+			continue
+		}
+		left := strings.TrimSpace(value[:start])
+		right := strings.TrimSpace(value[index:])
+		switch {
+		case left == "":
+			args = right
+		case right == "":
+			args = left
+		default:
+			args = left + " " + right
+		}
+		return candidate, args, true
+	}
+	return "", "", false
+}
+
+func parseManagedCommand(value string, command string) (string, bool) {
+	trimmed := strings.TrimSpace(value)
+	prefix := "/" + command
+	if !strings.EqualFold(trimmed, prefix) && !strings.HasPrefix(strings.ToLower(trimmed), strings.ToLower(prefix)+" ") {
+		return "", false
+	}
+	return strings.TrimSpace(trimmed[len(prefix):]), true
+}
+
 func formatToolCall(call messages.ToolCall) string {
 	summary := summarizeToolArguments(call.Name, call.ArgumentsJSON)
 	if summary == "" {
@@ -111,7 +232,7 @@ func formatToolCall(call messages.ToolCall) string {
 func toolDisplayName(name string) string {
 	switch name {
 	case "Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "ApplyPatch", "AskUser", "Skill",
-		"MCPListResources", "MCPReadResource", "MCPListPrompts", "MCPGetPrompt":
+		"MCPListResources", "MCPReadResource", "MCPListPrompts", "MCPGetPrompt", "LSP":
 		return name
 	default:
 		parts := strings.Fields(strings.ReplaceAll(name, "_", " "))
@@ -151,6 +272,13 @@ func summarizeToolArguments(toolName string, argumentsJSON string) string {
 		return readTrimmedString(arguments, "question", 72)
 	case "Skill":
 		return readTrimmedString(arguments, "name", 48)
+	case "LSP":
+		action := readTrimmedString(arguments, "action", 24)
+		file := readTrimmedString(arguments, "file", 48)
+		if action != "" && file != "" {
+			return action + " · " + file
+		}
+		return action + file
 	case "MCPReadResource":
 		return readTrimmedString(arguments, "uri", 72)
 	case "MCPGetPrompt":

@@ -40,7 +40,7 @@ func TestMCPToolDiscoveryAndCall(t *testing.T) {
 	if err != nil || len(listed.Tools) != 1 {
 		t.Fatalf("unexpected tools list: %#v err=%v", listed, err)
 	}
-	definition, err := newMCPTool("demo", listed.Tools[0], clientSession, true)
+	definition, err := newMCPTool("demo", listed.Tools[0], clientSession, true, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,6 +106,16 @@ func TestMCPResourceAndPromptTools(t *testing.T) {
 	}, tools.Context{})
 	if err != nil || !strings.Contains(promptResult.Content, "review code") {
 		t.Fatalf("unexpected prompt result: result=%#v err=%v", promptResult, err)
+	}
+}
+
+func TestExternalToolNameIsStableAndConservative(t *testing.T) {
+	if got := externalToolName("My Server", "Search/Files"); got != "mcp__my_server__search_files" {
+		t.Fatalf("unexpected normalized MCP tool name: %q", got)
+	}
+	long := externalToolName(strings.Repeat("server", 20), strings.Repeat("tool", 20))
+	if len(long) > 64 || strings.ContainsAny(long, " ./") {
+		t.Fatalf("long MCP tool name was not bounded/sanitized: %q (len=%d)", long, len(long))
 	}
 }
 
